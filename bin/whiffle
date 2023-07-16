@@ -1,0 +1,101 @@
+#!/bin/sh
+exec "${GUILE:-guile}" "$0" "$@"
+!#
+;;; Lightweight Scheme compiler directly to C. -*- scheme -*-
+;;; Copyright (C) 2023 Andy Wingo.
+
+;;; This library is free software; you can redistribute it and/or modify
+;;; it under the terms of the GNU Lesser General Public License as
+;;; published by the Free Software Foundation; either version 3 of the
+;;; License, or (at your option) any later version.
+;;;
+;;; This library is distributed in the hope that it will be useful, but
+;;; WITHOUT ANY WARRANTY; without even the implied warranty of
+;;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+;;; Lesser General Public License for more details.
+;;;
+;;; You should have received a copy of the GNU Lesser General Public
+;;; License along with this program.  If not, see
+;;; <http://www.gnu.org/licenses/>.
+
+(use-modules (ice-9 format)
+             (ice-9 getopt-long)
+             (ice-9 match)
+             (ice-9 textual-ports)
+             (whiffle compile)
+             (whiffle input))
+
+(define (usage whiffle port)
+  (format port "usage: ~a COMMAND ARG...\n" whiffle)
+  (format port "  available commands:\n")
+  (for-each
+   (match-lambda
+     ((name . runner)
+      (format port "    ~a\n" name)))
+   *commands*))
+
+(define compile-option-spec
+  '((version (single-char #\v) (value #f))
+    (help    (single-char #\h) (value #f))))
+
+(define (compile-command args)
+  (define options
+    (getopt-long (cons "whiffle" args)
+                 '((expr (single-char #\e) (value #t))
+                   (optimization-level (single-char #\O) (value #t))
+                   (warning-level (single-char #\W) (value #t))
+                   (output (single-char #\o) (value #t)))))
+  (define in-expr
+    (and=> (option-ref options 'expr #f)
+           open-input-string))
+  (define in
+    (match (option-ref options '() #f)
+      ((in)
+       (if in-expr
+           (error "whiffle compile: can't compile file and expr at same time")
+           (open-input-file in)))
+      (() (or in-expr
+              (error "whiffle compile: missing input file or -e expr\n")))
+      (_ (error "whiffle compile: too many input files\n"))))
+  (define out
+    (cond
+     ((option-ref options 'output #f) => open-output-file)
+     (else (current-output-port))))
+  (define optimization-level
+    (or (and=> (option-ref options 'optimization-level "2")
+               string->number)
+        (error "unexpected optimization level")))
+  (define warning-level
+    (or (and=> (option-ref options 'warning-level "2")
+               string->number)
+        (error "unexpected warning level")))
+  (put-string out
+              (compile-to-c (read-and-expand in)
+                            #:optimization-level optimization-level
+                            #:warning-level warning-level))
+  (force-output out)
+  0)
+
+(define (help-command args)
+  (usage "whiffle" (current-output-port))
+  0)
+
+(define *commands*
+  `(("compile" . ,compile-command)
+    ("help" . ,help-command)))
+
+(define (main args)
+  (match args
+    ((whiffle command . args)
+     (match (assoc-ref *commands* command)
+       (#f
+        (format (current-error-port) "unknown command: ~a\n" command)
+        (usage whiffle (current-error-port))
+        1)
+       (runner (runner args))))
+    ((whiffle . _)
+     (usage whiffle (current-error-port))
+     1)))
+
+(when (batch-mode?)
+  (exit (main (program-arguments))))

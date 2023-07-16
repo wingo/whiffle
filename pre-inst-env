@@ -1,0 +1,9 @@
+#!/bin/sh
+
+top_srcdir=$(cd $(dirname $0) && pwd)
+
+export GUILE_LOAD_COMPILED_PATH="$top_srcdir/module${GUILE_LOAD_COMPILED_PATH:+:}$GUILE_LOAD_COMPILED_PATH"
+export GUILE_LOAD_PATH="$top_srcdir/module${GUILE_LOAD_PATH:+:}$GUILE_LOAD_PATH"
+export PATH="$top_srcdir/bin${PATH:+:}$PATH"
+
+exec "$@"
