@@ -1,0 +1,337 @@
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "gc-api.h"
+#include "gc-ephemeron.h"
+
+#define GC_IMPL 1
+#include "gc-internal.h"
+
+#include "bdw-attrs.h"
+
+#if GC_PRECISE_ROOTS
+#error bdw-gc is a conservative collector
+#endif
+
+#if !GC_CONSERVATIVE_ROOTS
+#error bdw-gc is a conservative collector
+#endif
+
+#if !GC_CONSERVATIVE_TRACE
+#error bdw-gc is a conservative collector
+#endif
+
+// When pthreads are used, let `libgc' know about it and redirect
+// allocation calls such as `GC_MALLOC ()' to (contention-free, faster)
+// thread-local allocation.
+
+#define GC_THREADS 1
+#define GC_REDIRECT_TO_LOCAL 1
+
+// Don't #define pthread routines to their GC_pthread counterparts.
+// Instead we will be careful inside the benchmarks to use API to
+// register threads with libgc.
+#define GC_NO_THREAD_REDIRECTS 1
+
+#include <gc/gc.h>
+#include <gc/gc_inline.h> /* GC_generic_malloc_many */
+#include <gc/gc_mark.h> /* GC_generic_malloc */
+
+#define GC_INLINE_GRANULE_WORDS 2
+#define GC_INLINE_GRANULE_BYTES (sizeof(void *) * GC_INLINE_GRANULE_WORDS)
+
+/* A freelist set contains GC_INLINE_FREELIST_COUNT pointers to singly
+   linked lists of objects of different sizes, the ith one containing
+   objects i + 1 granules in size.  This setting of
+   GC_INLINE_FREELIST_COUNT will hold freelists for allocations of
+   up to 256 bytes.  */
+#define GC_INLINE_FREELIST_COUNT (256U / GC_INLINE_GRANULE_BYTES)
+
+struct gc_heap {
+  pthread_mutex_t lock;
+  int multithreaded;
+};
+
+struct gc_mutator {
+  void *freelists[GC_INLINE_FREELIST_COUNT];
+  struct gc_heap *heap;
+};
+
+static inline size_t gc_inline_bytes_to_freelist_index(size_t bytes) {
+  return (bytes - 1U) / GC_INLINE_GRANULE_BYTES;
+}
+static inline size_t gc_inline_freelist_object_size(size_t idx) {
+  return (idx + 1U) * GC_INLINE_GRANULE_BYTES;
+}
+
+// The values of these must match the internal POINTERLESS and NORMAL
+// definitions in libgc, for which unfortunately there are no external
+// definitions.  Alack.
+enum gc_inline_kind {
+  GC_INLINE_KIND_POINTERLESS,
+  GC_INLINE_KIND_NORMAL
+};
+
+static void* allocate_small_slow(void **freelist, size_t idx,
+                                 enum gc_inline_kind kind) GC_NEVER_INLINE;
+static void* allocate_small_slow(void **freelist, size_t idx,
+                                 enum gc_inline_kind kind) {
+  size_t bytes = gc_inline_freelist_object_size(idx);
+  GC_generic_malloc_many(bytes, kind, freelist);
+  void *head = *freelist;
+  if (GC_UNLIKELY (!head)) {
+    fprintf(stderr, "ran out of space, heap size %zu\n",
+            GC_get_heap_size());
+    GC_CRASH();
+  }
+  *freelist = *(void **)(head);
+  return head;
+}
+
+static inline void *
+allocate_small(void **freelist, size_t idx, enum gc_inline_kind kind) {
+  void *head = *freelist;
+
+  if (GC_UNLIKELY (!head))
+    return allocate_small_slow(freelist, idx, kind);
+
+  *freelist = *(void **)(head);
+  return head;
+}
+
+void* gc_allocate_large(struct gc_mutator *mut, size_t size) {
+  return GC_malloc(size);
+}
+
+void* gc_allocate_small(struct gc_mutator *mut, size_t size) {
+  GC_ASSERT(size != 0);
+  GC_ASSERT(size <= gc_allocator_large_threshold());
+  size_t idx = gc_inline_bytes_to_freelist_index(size);
+  return allocate_small(&mut->freelists[idx], idx, GC_INLINE_KIND_NORMAL);
+}
+
+void* gc_allocate_pointerless(struct gc_mutator *mut,
+                                            size_t size) {
+  // Because the BDW API requires us to implement a custom marker so
+  // that the pointerless freelist gets traced, even though it's in a
+  // pointerless region, we punt on thread-local pointerless freelists.
+  return GC_malloc_atomic(size);
+}
+
+void gc_collect(struct gc_mutator *mut) {
+  GC_gcollect();
+}
+
+// In BDW-GC, we can't hook into the mark phase to call
+// gc_trace_ephemerons_for_object, so the advertised ephemeron strategy
+// doesn't really work.  The primitives that we have are mark functions,
+// which run during GC and can't allocate; finalizers, which run after
+// GC and can allocate but can't add to the connectivity graph; and
+// disappearing links, which are cleared at the end of marking, in the
+// stop-the-world phase.  It does not appear to be possible to implement
+// ephemerons using these primitives.  Instead fall back to weak-key
+// tables.
+
+static int ephemeron_gc_kind;
+
+struct gc_ref gc_allocate_ephemeron(struct gc_mutator *mut) {
+  void *ret = GC_generic_malloc(gc_ephemeron_size(), ephemeron_gc_kind);
+  return gc_ref_from_heap_object(ret);
+}
+
+unsigned gc_heap_ephemeron_trace_epoch(struct gc_heap *heap) {
+  return 0;
+}
+
+void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
+                       struct gc_ref key, struct gc_ref value) {
+  gc_ephemeron_init_internal(mut->heap, ephemeron, key, value);
+  if (GC_base((void*)gc_ref_value(key))) {
+    struct gc_ref *loc = gc_edge_loc(gc_ephemeron_key_edge(ephemeron));
+    GC_register_disappearing_link((void**)loc);
+  }
+}
+
+struct ephemeron_mark_state {
+  struct GC_ms_entry *mark_stack_ptr;
+  struct GC_ms_entry *mark_stack_limit;
+};
+
+int gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
+  // Pretend the key is traced, to avoid adding this ephemeron to the
+  // global table.
+  return 1;
+}
+static void trace_ephemeron_edge(struct gc_edge edge, struct gc_heap *heap,
+                                 void *visit_data) {
+  struct ephemeron_mark_state *state = visit_data;
+  uintptr_t addr = gc_ref_value(gc_edge_ref(edge));
+  state->mark_stack_ptr = GC_MARK_AND_PUSH ((void *) addr,
+                                            state->mark_stack_ptr,
+                                            state->mark_stack_limit,
+                                            NULL);
+}
+
+static struct GC_ms_entry *
+mark_ephemeron(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
+               struct GC_ms_entry *mark_stack_limit, GC_word env) {
+
+  struct ephemeron_mark_state state = {
+    mark_stack_ptr,
+    mark_stack_limit,
+  };
+  
+  struct gc_ephemeron *ephemeron = (struct gc_ephemeron*) addr;
+
+  // If this ephemeron is on a freelist, its first word will be a
+  // freelist link and everything else will be NULL.
+  if (!gc_ref_value(gc_edge_ref(gc_ephemeron_value_edge(ephemeron)))) {
+    trace_ephemeron_edge(gc_edge(addr), NULL, &state);
+    return state.mark_stack_ptr;
+  }
+
+  if (!gc_ref_value(gc_edge_ref(gc_ephemeron_key_edge(ephemeron)))) {
+    // If the key died in a previous collection, the disappearing link
+    // will have been cleared.  Mark the ephemeron as dead.
+    gc_ephemeron_mark_dead(ephemeron);
+  }
+
+  gc_trace_ephemeron(ephemeron, trace_ephemeron_edge, NULL, &state);
+
+  return state.mark_stack_ptr;
+}
+
+static inline struct gc_mutator *add_mutator(struct gc_heap *heap) {
+  struct gc_mutator *ret = GC_malloc(sizeof(struct gc_mutator));
+  ret->heap = heap;
+  return ret;
+}
+
+static inline struct gc_heap *mutator_heap(struct gc_mutator *mutator) {
+  return mutator->heap;
+}
+
+struct gc_options {
+  struct gc_common_options common;
+};
+int gc_option_from_string(const char *str) {
+  return gc_common_option_from_string(str);
+}
+struct gc_options* gc_allocate_options(void) {
+  struct gc_options *ret = malloc(sizeof(struct gc_options));
+  gc_init_common_options(&ret->common);
+  return ret;
+}
+int gc_options_set_int(struct gc_options *options, int option, int value) {
+  return gc_common_options_set_int(&options->common, option, value);
+}
+int gc_options_set_size(struct gc_options *options, int option,
+                        size_t value) {
+  return gc_common_options_set_size(&options->common, option, value);
+}
+int gc_options_set_double(struct gc_options *options, int option,
+                          double value) {
+  return gc_common_options_set_double(&options->common, option, value);
+}
+int gc_options_parse_and_set(struct gc_options *options, int option,
+                             const char *value) {
+  return gc_common_options_parse_and_set(&options->common, option, value);
+}
+
+int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
+            struct gc_heap **heap, struct gc_mutator **mutator) {
+  GC_ASSERT_EQ(gc_allocator_small_granule_size(), GC_INLINE_GRANULE_BYTES);
+  GC_ASSERT_EQ(gc_allocator_large_threshold(),
+               GC_INLINE_FREELIST_COUNT * GC_INLINE_GRANULE_BYTES);
+
+  if (!options) options = gc_allocate_options();
+
+  // Ignore stack base for main thread.
+
+  switch (options->common.heap_size_policy) {
+    case GC_HEAP_SIZE_FIXED:
+      GC_set_max_heap_size(options->common.heap_size);
+      break;
+    case GC_HEAP_SIZE_GROWABLE: {
+      if (options->common.maximum_heap_size)
+        GC_set_max_heap_size(options->common.maximum_heap_size);
+      // BDW uses a pretty weird heap-sizing heuristic:
+      //
+      // heap-size = live-data * (1 + (2 / GC_free_space_divisor))
+      // heap-size-multiplier = heap-size/live-data = 1 + 2/GC_free_space_divisor
+      // GC_free_space_divisor = 2/(heap-size-multiplier-1)
+      //
+      // (Assumption: your heap is mostly "composite", i.e. not
+      // "atomic".  See bdw's alloc.c:min_bytes_allocd.)
+      double fsd = 2.0/(options->common.heap_size_multiplier - 1);
+      // But, the divisor is an integer.  WTF.  This caps the effective
+      // maximum heap multiplier at 3.  Oh well.
+      GC_set_free_space_divisor(fsd + 0.51);
+      break;
+    }
+    case GC_HEAP_SIZE_ADAPTIVE:
+    default:
+      fprintf(stderr, "adaptive heap sizing unsupported by bdw-gc\n");
+      return 0;
+  }
+
+  // Not part of 7.3, sigh.  Have to set an env var.
+  // GC_set_markers_count(options->common.parallelism);
+  char markers[21] = {0,}; // 21 bytes enough for 2**64 in decimal + NUL.
+  snprintf(markers, sizeof(markers), "%d", options->common.parallelism);
+  setenv("GC_MARKERS", markers, 1);
+  GC_init();
+  size_t current_heap_size = GC_get_heap_size();
+  if (options->common.heap_size > current_heap_size)
+    GC_expand_hp(options->common.heap_size - current_heap_size);
+  GC_allow_register_threads();
+  *heap = GC_malloc(sizeof(struct gc_heap));
+  pthread_mutex_init(&(*heap)->lock, NULL);
+  *mutator = add_mutator(*heap);
+
+  {
+    GC_word descriptor = GC_MAKE_PROC(GC_new_proc(mark_ephemeron), 0);
+    int add_size_to_descriptor = 0;
+    int clear_memory = 1;
+    ephemeron_gc_kind = GC_new_kind(GC_new_free_list(), descriptor,
+                                    add_size_to_descriptor, clear_memory);
+  }
+
+  return 1;
+}
+
+struct gc_mutator* gc_init_for_thread(struct gc_stack_addr *stack_base,
+                                      struct gc_heap *heap) {
+  pthread_mutex_lock(&heap->lock);
+  if (!heap->multithreaded) {
+    GC_allow_register_threads();
+    heap->multithreaded = 1;
+  }
+  pthread_mutex_unlock(&heap->lock);
+
+  struct GC_stack_base base = { stack_base };
+  GC_register_my_thread(&base);
+  return add_mutator(heap);
+}
+void gc_finish_for_thread(struct gc_mutator *mut) {
+  GC_unregister_my_thread();
+}
+
+void* gc_call_without_gc(struct gc_mutator *mut,
+                         void* (*f)(void*),
+                         void *data) {
+  return GC_do_blocking(f, data);
+}
+
+void gc_mutator_set_roots(struct gc_mutator *mut,
+                          struct gc_mutator_roots *roots) {
+}
+void gc_heap_set_roots(struct gc_heap *heap, struct gc_heap_roots *roots) {
+}
+
+void gc_print_stats(struct gc_heap *heap) {
+  printf("Completed %ld collections\n", (long)GC_get_gc_no());
+  printf("Heap size is %ld\n", (long)GC_get_heap_size());
+}
