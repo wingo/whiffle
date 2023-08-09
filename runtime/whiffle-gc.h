@@ -1,5 +1,5 @@
-#ifndef SCHEME_EMBEDDER_H
-#define SCHEME_EMBEDDER_H
+#ifndef WHIFFLE_EMBEDDER_H
+#define WHIFFLE_EMBEDDER_H
 
 #include <stdatomic.h>
 #include <stddef.h>
@@ -7,8 +7,6 @@
 #include "whiffle/types.h"
 #include "gc-config.h"
 #include "gc-embedder-api.h"
-
-struct gc_heap;
 
 #define GC_EMBEDDER_EPHEMERON_HEADER struct gc_header header;
 
@@ -33,12 +31,12 @@ static inline void gc_trace_object(struct gc_ref ref,
   // Shouldn't get here.
   GC_CRASH();
 #else
-  switch (tag_kind(gc_ref_heap_object(ref))) {
+  switch (tagged_kind(gc_ref_heap_object(ref))) {
     case PAIR_TAG: {
       Pair *p = gc_ref_heap_object(ref);
       if (trace_edge) {
-        trace_edge(gc_edge(&p->tag), heap, visit_data);
-        trace_edge(gc_edge(&p->cdr), heap, visit_data);
+        trace_edge(gc_edge(&p->tag), heap, trace_data);
+        trace_edge(gc_edge(&p->cdr), heap, trace_data);
       }
       if (size)
         *size = sizeof(*p);
@@ -48,7 +46,7 @@ static inline void gc_trace_object(struct gc_ref ref,
     case BOX_TAG: {
       Box *b = gc_ref_heap_object(ref);
       if (trace_edge) {
-        trace_edge(gc_edge(&b->val), heap, visit_data);
+        trace_edge(gc_edge(&b->val), heap, trace_data);
       }
       if (size)
         *size = sizeof(*b);
@@ -57,25 +55,25 @@ static inline void gc_trace_object(struct gc_ref ref,
 
     case VECTOR_TAG: {
       Vector *v = gc_ref_heap_object(ref);
-      size_t len = tag_payload(&c->tag);
+      size_t len = tagged_payload(&c->tag);
       if (trace_edge) {
         for (size_t i = 0; i < len; i++)
-          visit(gc_edge(&v->vals[i]), heap, visit_data);
+          trace_edge(gc_edge(&v->vals[i]), heap, trace_data);
       }
       if (size)
-        *size = sizeof(*v) + sizeof(Value) * lena;
+        *size = sizeof(*v) + sizeof(Value) * len;
       return;
     }
 
     case CLOSURE_TAG: {
       Closure *c = gc_ref_heap_object(ref);
-      size_t nfree = tag_payload(&c->tag);
+      size_t nfree = tagged_payload(&c->tag);
       if (trace_edge) {
         for (size_t i = 0; i < nfree; i++)
-          visit(gc_edge(&c->free_vars[i]), heap, visit_data);
+          trace_edge(gc_edge(&c->free_vars[i]), heap, trace_data);
       }
       if (size)
-        *size = sizeof(*c) + sizeof(Value) * lena;
+        *size = sizeof(*c) + sizeof(Value) * nfree;
       return;
     }
 
@@ -85,24 +83,18 @@ static inline void gc_trace_object(struct gc_ref ref,
 #endif // GC_CONSERVATIVE_TRACE
 }
 
-static inline void visit_roots(struct handle *roots,
-                               void (*trace_edge)(struct gc_edge edge,
-                                                  struct gc_heap *heap,
-                                                  void *trace_data),
-                               struct gc_heap *heap,
-                               void *trace_data) {
-  for (struct handle *h = roots; h; h = h->next)
-    trace_edge(gc_edge(&h->v), heap, trace_data);
-}
-
 static inline void gc_trace_mutator_roots(struct gc_mutator_roots *roots,
                                           void (*trace_edge)(struct gc_edge edge,
                                                              struct gc_heap *heap,
                                                              void *trace_data),
                                           struct gc_heap *heap,
                                           void *trace_data) {
-  if (roots)
-    visit_roots(roots->roots, trace_edge, heap, trace_data);
+  if (roots) {
+    for (Value *sp = roots->safepoint.sp;
+         sp < roots->safepoint.thread->sp_base;
+         sp++)
+      trace_edge(gc_edge(sp), heap, trace_data);
+  }
 }
 
 static inline void gc_trace_heap_roots(struct gc_heap_roots *roots,
@@ -112,77 +104,71 @@ static inline void gc_trace_heap_roots(struct gc_heap_roots *roots,
                                        struct gc_heap *heap,
                                        void *trace_data) {
   if (roots)
-    visit_roots(roots->roots, trace_edge, heap, trace_data);
+    GC_CRASH();
 }
 
 static inline uintptr_t gc_object_forwarded_nonatomic(struct gc_ref ref) {
-  uintptr_t tag = *tag_word(ref);
-  return (tag & gcobj_not_forwarded_bit) ? 0 : tag;
+  return tagged_forwarded(gc_ref_heap_object(ref));
 }
 
 static inline void gc_object_forward_nonatomic(struct gc_ref ref,
                                                struct gc_ref new_ref) {
-  *tag_word(ref) = gc_ref_value(new_ref);
+  Tagged *old = gc_ref_heap_object(ref);
+  old->tag = make_forwarded(gc_ref_heap_object(new_ref));
 }
 
 static inline void gc_object_set_remembered(struct gc_ref ref) {
-  uintptr_t *loc = tag_word(ref);
-  uintptr_t tag = *loc;
-  while (!(tag & gcobj_remembered_bit))
-    atomic_compare_exchange_weak(loc, &tag, tag | gcobj_remembered_bit);
+  tagged_set_remembered(gc_ref_heap_object(ref));
 }
 
 static inline int gc_object_is_remembered_nonatomic(struct gc_ref ref) {
-  uintptr_t *loc = tag_word(ref);
-  uintptr_t tag = *loc;
-  return tag & gcobj_remembered_bit;
+  return tagged_remembered(gc_ref_heap_object(ref));
 }
 
 static inline void gc_object_clear_remembered_nonatomic(struct gc_ref ref) {
-  uintptr_t *loc = tag_word(ref);
-  uintptr_t tag = *loc;
-  *loc = tag & ~(uintptr_t)gcobj_remembered_bit;
+  return tagged_clear_remembered(gc_ref_heap_object(ref));
 }
 
 static inline struct gc_atomic_forward
 gc_atomic_forward_begin(struct gc_ref ref) {
-  uintptr_t tag = atomic_load_explicit(tag_word(ref), memory_order_acquire);
+  Tagged *obj = gc_ref_heap_object(ref);
+  uintptr_t observed = atomic_load_explicit(&obj->tag, memory_order_acquire);
   enum gc_forwarding_state state;
-  if (tag == gcobj_busy)
+  if (observed == BUSY_TAG)
     state = GC_FORWARDING_STATE_BUSY;
-  else if (tag & gcobj_not_forwarded_bit)
-    state = GC_FORWARDING_STATE_NOT_FORWARDED;
-  else
+  else if (tag_is_forwarded(observed))
     state = GC_FORWARDING_STATE_FORWARDED;
-  return (struct gc_atomic_forward){ ref, tag, state };
+  else
+    state = GC_FORWARDING_STATE_NOT_FORWARDED;
+  return (struct gc_atomic_forward){ ref, observed, state };
 }
 
 static inline int
 gc_atomic_forward_retry_busy(struct gc_atomic_forward *fwd) {
   GC_ASSERT(fwd->state == GC_FORWARDING_STATE_BUSY);
-  uintptr_t tag = atomic_load_explicit(tag_word(fwd->ref),
-                                       memory_order_acquire);
-  if (tag == gcobj_busy)
+  Tagged *obj = gc_ref_heap_object(fwd->ref);
+  uintptr_t observed = atomic_load_explicit(&obj->tag, memory_order_acquire);
+  if (observed == BUSY_TAG)
     return 0;
-  if (tag & gcobj_not_forwarded_bit)
-    fwd->state = GC_FORWARDING_STATE_ABORTED;
-  else {
+  if (tag_is_forwarded(observed)) {
     fwd->state = GC_FORWARDING_STATE_FORWARDED;
-    fwd->data = tag;
+    fwd->data = observed;
+    return 1;
   }
+  fwd->state = GC_FORWARDING_STATE_ABORTED;
   return 1;
 }
   
 static inline void
 gc_atomic_forward_acquire(struct gc_atomic_forward *fwd) {
   GC_ASSERT(fwd->state == GC_FORWARDING_STATE_NOT_FORWARDED);
-  if (atomic_compare_exchange_strong(tag_word(fwd->ref), &fwd->data,
-                                     gcobj_busy))
+  Tagged *obj = gc_ref_heap_object(fwd->ref);
+  if (atomic_compare_exchange_strong(&obj->tag, &fwd->data, BUSY_TAG))
     fwd->state = GC_FORWARDING_STATE_ACQUIRED;
-  else if (fwd->data == gcobj_busy)
+  else if (fwd->data == BUSY_TAG)
     fwd->state = GC_FORWARDING_STATE_BUSY;
   else {
-    GC_ASSERT((fwd->data & gcobj_not_forwarded_bit) == 0);
+    GC_ASSERT(tag_is_forwarded(fwd->data));
     fwd->state = GC_FORWARDING_STATE_FORWARDED;
   }
 }
@@ -190,23 +176,26 @@ gc_atomic_forward_acquire(struct gc_atomic_forward *fwd) {
 static inline void
 gc_atomic_forward_abort(struct gc_atomic_forward *fwd) {
   GC_ASSERT(fwd->state == GC_FORWARDING_STATE_ACQUIRED);
-  atomic_store_explicit(tag_word(fwd->ref), fwd->data, memory_order_release);
+  Tagged *obj = gc_ref_heap_object(fwd->ref);
+  atomic_store_explicit(&obj->tag, fwd->data, memory_order_release);
   fwd->state = GC_FORWARDING_STATE_ABORTED;
 }
 
 static inline void
 gc_atomic_forward_commit(struct gc_atomic_forward *fwd, struct gc_ref new_ref) {
   GC_ASSERT(fwd->state == GC_FORWARDING_STATE_ACQUIRED);
-  *tag_word(new_ref) = fwd->data;
-  atomic_store_explicit(tag_word(fwd->ref), gc_ref_value(new_ref),
-                        memory_order_release);
+  Tagged *obj = gc_ref_heap_object(fwd->ref);
+  Tagged *new_obj = gc_ref_heap_object(new_ref);
+  new_obj->tag = fwd->data;
+  uintptr_t forwarded_tag = make_forwarded_tag(new_obj);
+  atomic_store_explicit(&obj->tag, forwarded_tag, memory_order_release);
   fwd->state = GC_FORWARDING_STATE_FORWARDED;
 }
 
 static inline uintptr_t
 gc_atomic_forward_address(struct gc_atomic_forward *fwd) {
   GC_ASSERT(fwd->state == GC_FORWARDING_STATE_FORWARDED);
-  return fwd->data;
+  return tag_forwarded_addr(fwd->data);
 }
 
-#endif // SCHEME_EMBEDDER_H
+#endif // WHIFFLE_EMBEDDER_H

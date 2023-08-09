@@ -44,7 +44,7 @@ static inline Value vm_make_closure(VM vm, Code code, size_t nfree) {
     vm.thread->roots.safepoint = vm;
     ret = gc_allocate_slow(vm.thread->mut, bytes);
   }
-  tag_set_payload(&ret->tag, CLOSURE_TAG, nfree);
+  tagged_set_payload(&ret->tag, CLOSURE_TAG, nfree);
   ret->code = code;
 
   // Because one might allocate multiple closures then initialize them
@@ -67,7 +67,7 @@ static inline Value vm_closure_ref(Value closure, size_t idx) {
 
 static inline int is_closure(Value v) {
   return is_heap_object(v) &&
-    tag_kind(value_to_heap_object(v)) == CLOSURE_TAG;
+    tagged_kind(value_to_heap_object(v)) == CLOSURE_TAG;
 }
 static inline Code vm_closure_code(Value closure) {
   if (!is_closure(closure)) abort();
@@ -82,7 +82,7 @@ static inline Value vm_box(VM vm, Value a) {
     vm.thread->roots.safepoint = vm;
     ret = gc_allocate_slow(vm.thread->mut, bytes);
   }
-  tag_set_payload(&ret->tag, BOX_TAG, 0);
+  tagged_set_payload(&ret->tag, BOX_TAG, 0);
   ret->val = a;
   return value_from_heap_object(ret);
 }
@@ -136,19 +136,19 @@ static inline Value vm_cons(VM vm, Value a, Value b) {
     vm.thread->roots.safepoint = vm;
     ret = gc_allocate_slow(vm.thread->mut, bytes);
   }
-  tag_set_value(&ret->tag, PAIR_TAG, a);
+  tagged_set_value(&ret->tag, PAIR_TAG, a);
   ret->cdr = b;
   return value_from_heap_object(ret);
 }
 
 static inline int is_pair(Value x) {
-  return is_heap_object(x) && tag_kind(value_to_heap_object(x)) == PAIR_TAG;
+  return is_heap_object(x) && tagged_kind(value_to_heap_object(x)) == PAIR_TAG;
 }
 
 static inline Value vm_car(Value pair) {
   if (!is_pair(pair)) abort();
   Pair *p = value_to_heap_object(pair);
-  return tag_value(&p->tag);
+  return tagged_value(&p->tag);
 }
 
 static inline Value vm_cdr(Value pair) {
@@ -160,7 +160,7 @@ static inline Value vm_cdr(Value pair) {
 static inline void vm_set_car(Value pair, Value val) {
   if (!is_pair(pair)) abort();
   Pair *p = value_to_heap_object(pair);
-  tag_set_value(&p->tag, PAIR_TAG, val);
+  tagged_set_value(&p->tag, PAIR_TAG, val);
 }
 
 static inline void vm_set_cdr(Value pair, Value val) {
@@ -179,7 +179,7 @@ static inline Value vm_make_vector(VM vm, Value size, Value init) {
     vm.thread->roots.safepoint = vm;
     ret = gc_allocate_slow(vm.thread->mut, bytes);
   }
-  tag_set_payload(&ret->tag, VECTOR_TAG, c_size);
+  tagged_set_payload(&ret->tag, VECTOR_TAG, c_size);
 
   // Because one might allocate multiple closures then initialize them
   // all together in a <fix>, ensure the fields hold sensible values.
@@ -197,25 +197,25 @@ static inline Value vm_allocate_vector(VM vm, size_t size) {
     vm.thread->roots.safepoint = vm;
     ret = gc_allocate_slow(vm.thread->mut, bytes);
   }
-  tag_set_payload(&ret->tag, VECTOR_TAG, size);
+  tagged_set_payload(&ret->tag, VECTOR_TAG, size);
   return value_from_heap_object(ret);
 }
 
 static inline int is_vector(Value x) {
-  return is_heap_object(x) && tag_kind(value_to_heap_object(x)) == VECTOR_TAG;
+  return is_heap_object(x) && tagged_kind(value_to_heap_object(x)) == VECTOR_TAG;
 }
 
 static inline Value vm_vector_length(Value vector) {
   if (!is_vector(vector)) abort();
   Vector *v = value_to_heap_object(vector);
-  return make_fixnum(tag_payload(&v->tag));
+  return make_fixnum(tagged_payload(&v->tag));
 }
 
 static inline Value vm_vector_ref(Value vector, Value idx) {
   if (!is_vector(vector)) abort();
   if (!is_fixnum(idx)) abort();
   Vector *v = value_to_heap_object(vector);
-  size_t size = tag_payload(&v->tag);
+  size_t size = tagged_payload(&v->tag);
   intptr_t c_idx = fixnum_value(idx);
   if (c_idx < 0 || c_idx >= size) abort();
   return v->vals[c_idx];
@@ -225,7 +225,7 @@ static inline void vm_vector_set(Value vector, Value idx, Value val) {
   if (!is_vector(vector)) abort();
   if (!is_fixnum(idx)) abort();
   Vector *v = value_to_heap_object(vector);
-  size_t size = tag_payload(&v->tag);
+  size_t size = tagged_payload(&v->tag);
   intptr_t c_idx = fixnum_value(idx);
   if (c_idx < 0 || c_idx >= size) abort();
   v->vals[c_idx] = val;
