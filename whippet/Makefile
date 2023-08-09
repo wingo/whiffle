@@ -1,5 +1,5 @@
-TESTS=quads mt-gcbench ephemerons # MT_GCBench MT_GCBench2
-COLLECTORS= \
+TESTS = quads mt-gcbench ephemerons # MT_GCBench MT_GCBench2
+COLLECTORS = \
 	bdw \
 	semi \
 	\
@@ -19,136 +19,98 @@ COLLECTORS= \
 	stack-conservative-parallel-generational-whippet \
 	heap-conservative-parallel-generational-whippet
 
-DEFAULT_BUILD:=opt
+DEFAULT_BUILD := opt
 
-BUILD_CFLAGS_opt=-O2 -g -DNDEBUG
-BUILD_CFLAGS_optdebug=-Og -g -DGC_DEBUG=1
-BUILD_CFLAGS_debug=-O0 -g -DGC_DEBUG=1
+BUILD_CFLAGS_opt      = -O2 -g -DNDEBUG
+BUILD_CFLAGS_optdebug = -Og -g -DGC_DEBUG=1
+BUILD_CFLAGS_debug    = -O0 -g -DGC_DEBUG=1
 
-BUILD_CFLAGS=$(BUILD_CFLAGS_$(or $(BUILD),$(DEFAULT_BUILD)))
+BUILD_CFLAGS = $(BUILD_CFLAGS_$(or $(BUILD),$(DEFAULT_BUILD)))
 
-CC=gcc
-CFLAGS=-Wall -flto -fno-strict-aliasing -fvisibility=hidden -Wno-unused $(BUILD_CFLAGS)
-INCLUDES=-I.
-LDFLAGS=-lpthread -flto
-COMPILE=$(CC) $(CFLAGS) $(INCLUDES)
-PLATFORM=gnu-linux
+CC       = gcc
+CFLAGS   = -Wall -flto -fno-strict-aliasing -fvisibility=hidden -Wno-unused $(BUILD_CFLAGS)
+CPPFLAGS = -Iapi
+LDFLAGS  = -lpthread -flto
+DEPFLAGS = -MMD -MP -MF $(@:obj/%.o=.deps/%.d)
+COMPILE  = $(CC) $(CFLAGS) $(CPPFLAGS) $(DEPFLAGS) -o $@
+LINK     = $(CC) $(LDFLAGS) -o $@
+PLATFORM = gnu-linux
 
-ALL_TESTS=$(foreach COLLECTOR,$(COLLECTORS),$(addprefix $(COLLECTOR)-,$(TESTS)))
+ALL_TESTS = $(foreach COLLECTOR,$(COLLECTORS),$(addsuffix .$(COLLECTOR),$(TESTS)))
 
-all: $(ALL_TESTS)
+all: $(ALL_TESTS:%=bin/%)
+.deps obj bin: ; mkdir -p $@
 
-gc-platform.o: gc-platform.h gc-platform-$(PLATFORM).c gc-visibility.h
-	$(COMPILE) -o $@ -c gc-platform-$(PLATFORM).c
+include $(wildcard .deps/*)
 
-gc-stack.o: gc-stack.c
-	$(COMPILE) -o $@ -c $<
+obj/gc-platform.o: src/gc-platform-$(PLATFORM).c | .deps obj
+	$(COMPILE) -c $<
+obj/gc-stack.o: src/gc-stack.c | .deps obj
+	$(COMPILE) -c $<
+obj/gc-options.o: src/gc-options.c | .deps obj
+	$(COMPILE) -c $<
+obj/%.gc-ephemeron.o: src/gc-ephemeron.c | .deps obj
+	$(COMPILE) -include benchmarks/$*-embedder.h -c $<
 
-gc-options.o: gc-options.c gc-options.h gc-options-internal.h
-	$(COMPILE) -o $@ -c $<
+GC_STEM_bdw   	   = bdw
+GC_CFLAGS_bdw 	   = -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1
+GC_IMPL_CFLAGS_bdw = `pkg-config --cflags bdw-gc`
+GC_LIBS_bdw        = `pkg-config --libs bdw-gc`
 
-gc-ephemeron-%.o: gc-ephemeron.c gc-ephemeron.h gc-ephemeron-internal.h %-embedder.h
-	$(COMPILE) -include $*-embedder.h -o $@ -c $<
+GC_STEM_semi       = semi
+GC_CFLAGS_semi     = -DGC_PRECISE_ROOTS=1
 
-bdw-%-gc.o: bdw.c %-embedder.h %.c
-	$(COMPILE) -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 `pkg-config --cflags bdw-gc` -include $*-embedder.h -o $@ -c bdw.c
-bdw-%.o: bdw.c %.c
-	$(COMPILE) -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include bdw-attrs.h -o $@ -c $*.c
-bdw-%: bdw-%.o bdw-%-gc.o gc-stack.o gc-options.o gc-platform.o gc-ephemeron-%.o
-	$(CC) $(LDFLAGS) `pkg-config --libs bdw-gc` -o $@ $^
+define whippet_variant
+GC_STEM_$(1)       = whippet
+GC_CFLAGS_$(1)     = $(2)
+endef
 
-semi-%-gc.o: semi.c %-embedder.h large-object-space.h assert.h debug.h %.c
-	$(COMPILE) -DGC_PRECISE_ROOTS=1 -include $*-embedder.h -o $@ -c semi.c
-semi-%.o: semi.c %.c
-	$(COMPILE) -DGC_PRECISE_ROOTS=1 -include semi-attrs.h -o $@ -c $*.c
-semi-%: semi-%.o semi-%-gc.o gc-stack.o gc-options.o gc-platform.o gc-ephemeron-%.o
-	$(CC) $(LDFLAGS) -o $@ $^
+define generational_whippet_variants
+$(call whippet_variant,$(1)whippet,$(2))
+$(call whippet_variant,$(1)generational_whippet,$(2) -DGC_GENERATIONAL=1)
+endef
 
-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
-	$(COMPILE) -DGC_PRECISE_ROOTS=1 -include $*-embedder.h -o $@ -c whippet.c
-whippet-%.o: whippet.c %.c
-	$(COMPILE) -DGC_PRECISE_ROOTS=1 -include whippet-attrs.h -o $@ -c $*.c
-whippet-%: whippet-%.o whippet-%-gc.o gc-stack.o gc-options.o gc-platform.o gc-ephemeron-%.o
-	$(CC) $(LDFLAGS) -o $@ $^
+define parallel_whippet_variants
+$(call generational_whippet_variants,$(1),$(2))
+$(call generational_whippet_variants,$(1)parallel_,$(2) -DGC_PARALLEL=1)
+endef
 
-stack-conservative-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
-	$(COMPILE) -DGC_CONSERVATIVE_ROOTS=1 -include $*-embedder.h -o $@ -c whippet.c
-stack-conservative-whippet-%.o: whippet.c %.c
-	$(COMPILE) -DGC_CONSERVATIVE_ROOTS=1 -include whippet-attrs.h -o $@ -c $*.c
-stack-conservative-whippet-%: stack-conservative-whippet-%.o stack-conservative-whippet-%-gc.o gc-stack.o gc-options.o gc-platform.o gc-ephemeron-%.o
-	$(CC) $(LDFLAGS) -o $@ $^
+define trace_whippet_variants
+$(call parallel_whippet_variants,,-DGC_PRECISE_ROOTS=1)
+$(call parallel_whippet_variants,stack_conservative_,-DGC_CONSERVATIVE_ROOTS=1)
+$(call parallel_whippet_variants,heap_conservative_,-DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1)
+endef
 
-heap-conservative-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
-	$(COMPILE) -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include $*-embedder.h -o $@ -c whippet.c
-heap-conservative-whippet-%.o: whippet.c %.c
-	$(COMPILE) -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include whippet-attrs.h -o $@ -c $*.c
-heap-conservative-whippet-%: heap-conservative-whippet-%.o heap-conservative-whippet-%-gc.o gc-stack.o gc-options.o gc-platform.o gc-ephemeron-%.o
-	$(CC) $(LDFLAGS) -o $@ $^
+$(eval $(call trace_whippet_variants))
 
-parallel-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h parallel-tracer.h assert.h debug.h heap-objects.h %.c
-	$(COMPILE) -DGC_PARALLEL=1 -DGC_PRECISE_ROOTS=1 -include $*-embedder.h -o $@ -c whippet.c
-parallel-whippet-%.o: whippet.c %.c
-	$(COMPILE) -DGC_PARALLEL=1 -DGC_PRECISE_ROOTS=1 -include whippet-attrs.h -o $@ -c $*.c
-parallel-whippet-%: parallel-whippet-%.o parallel-whippet-%-gc.o gc-stack.o gc-options.o gc-platform.o gc-ephemeron-%.o
-	$(CC) $(LDFLAGS) -o $@ $^
+# $(1) is the benchmark, $(2) is the collector configuration
+make_gc_var    = $$($(1)$(subst -,_,$(2)))
+gc_impl        = $(call make_gc_var,GC_STEM_,$(1)).c
+gc_attrs       = $(call make_gc_var,GC_STEM_,$(1))-attrs.h
+gc_cflags      = $(call make_gc_var,GC_CFLAGS_,$(1))
+gc_impl_cflags = $(call make_gc_var,GC_IMPL_CFLAGS_,$(1))
+gc_libs        = $(call make_gc_var,GC_LIBS_,$(1))
+define benchmark_template
+obj/$(1).$(2).gc.o: src/$(call gc_impl,$(2)) | .deps obj
+	$$(COMPILE) $(call gc_cflags,$(2)) $(call gc_impl_cflags,$(2)) -include benchmarks/$(1)-embedder.h -c $$<
+obj/$(1).$(2).o: benchmarks/$(1).c | .deps obj
+	$$(COMPILE) $(call gc_cflags,$(2)) -include api/$(call gc_attrs,$(2)) -c $$<
+bin/$(1).$(2): obj/$(1).$(2).gc.o obj/$(1).$(2).o obj/gc-stack.o obj/gc-options.o obj/gc-platform.o obj/$(1).gc-ephemeron.o | bin
+	$$(LINK) $(call gc_libs,$(2)) $$^
+endef
 
-stack-conservative-parallel-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
-	$(COMPILE) -DGC_PARALLEL=1 -DGC_CONSERVATIVE_ROOTS=1 -include $*-embedder.h -o $@ -c whippet.c
-stack-conservative-parallel-whippet-%.o: whippet.c %.c
-	$(COMPILE) -DGC_PARALLEL=1 -DGC_CONSERVATIVE_ROOTS=1 -include whippet-attrs.h -o $@ -c $*.c
-stack-conservative-parallel-whippet-%: stack-conservative-parallel-whippet-%.o stack-conservative-parallel-whippet-%-gc.o gc-stack.o gc-options.o gc-platform.o gc-ephemeron-%.o
-	$(CC) $(LDFLAGS) -o $@ $^
+$(foreach BENCHMARK,$(TESTS),\
+  $(foreach COLLECTOR,$(COLLECTORS),\
+    $(eval $(call benchmark_template,$(BENCHMARK),$(COLLECTOR)))))
 
-heap-conservative-parallel-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
-	$(COMPILE) -DGC_PARALLEL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include $*-embedder.h -o $@ -c whippet.c
-heap-conservative-parallel-whippet-%.o: whippet.c %.c
-	$(COMPILE) -DGC_PARALLEL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -DGC_FULLY_CONSERVATIVE=1 -include whippet-attrs.h -o $@ -c $*.c
-heap-conservative-parallel-whippet-%: heap-conservative-parallel-whippet-%.o heap-conservative-parallel-whippet-%-gc.o gc-stack.o gc-options.o gc-platform.o gc-ephemeron-%.o
-	$(CC) $(LDFLAGS) -o $@ $^
-
-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
-	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1 -include $*-embedder.h -o $@ -c whippet.c
-generational-whippet-%.o: whippet.c %.c
-	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1 -include whippet-attrs.h -o $@ -c $*.c
-generational-whippet-%: generational-whippet-%.o generational-whippet-%-gc.o gc-stack.o gc-options.o gc-platform.o gc-ephemeron-%.o
-	$(CC) $(LDFLAGS) -o $@ $^
-
-stack-conservative-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
-	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -include $*-embedder.h -o $@ -c whippet.c
-stack-conservative-generational-whippet-%.o: whippet.c %.c
-	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -include whippet-attrs.h -o $@ -c $*.c
-stack-conservative-generational-whippet-%: stack-conservative-generational-whippet-%.o stack-conservative-generational-whippet-%-gc.o gc-stack.o gc-options.o gc-platform.o gc-ephemeron-%.o
-	$(CC) $(LDFLAGS) -o $@ $^
-
-heap-conservative-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h serial-tracer.h assert.h debug.h heap-objects.h %.c
-	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include $*-embedder.h -o $@ -c whippet.c
-heap-conservative-generational-whippet-%.o: whippet.c %.c
-	$(COMPILE) -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include whippet-attrs.h -o $@ -c $*.c
-heap-conservative-generational-whippet-%: heap-conservative-generational-whippet-%.o heap-conservative-generational-whippet-%-gc.o gc-stack.o gc-options.o gc-platform.o gc-ephemeron-%.o
-	$(CC) $(LDFLAGS) -o $@ $^
-
-parallel-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h parallel-tracer.h assert.h debug.h heap-objects.h %.c
-	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1 -include $*-embedder.h -o $@ -c whippet.c
-parallel-generational-whippet-%.o: whippet.c %.c
-	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_PRECISE_ROOTS=1 -include whippet-attrs.h -o $@ -c $*.c
-parallel-generational-whippet-%: parallel-generational-whippet-%.o parallel-generational-whippet-%-gc.o gc-stack.o gc-options.o gc-platform.o gc-ephemeron-%.o
-	$(CC) $(LDFLAGS) -o $@ $^
-
-stack-conservative-parallel-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h parallel-tracer.h assert.h debug.h heap-objects.h %.c
-	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -include $*-embedder.h -o $@ -c whippet.c
-stack-conservative-parallel-generational-whippet-%.o: whippet.c %.c
-	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -include whippet-attrs.h -o $@ -c $*.c
-stack-conservative-parallel-generational-whippet-%: stack-conservative-parallel-generational-whippet-%.o stack-conservative-parallel-generational-whippet-%-gc.o gc-stack.o gc-options.o gc-platform.o gc-ephemeron-%.o
-	$(CC) $(LDFLAGS) -o $@ $^
-
-heap-conservative-parallel-generational-whippet-%-gc.o: whippet.c %-embedder.h large-object-space.h parallel-tracer.h assert.h debug.h heap-objects.h %.c
-	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include $*-embedder.h -o $@ -c whippet.c
-heap-conservative-parallel-generational-whippet-%.o: whippet.c %.c
-	$(COMPILE) -DGC_PARALLEL=1 -DGC_GENERATIONAL=1 -DGC_CONSERVATIVE_ROOTS=1 -DGC_CONSERVATIVE_TRACE=1 -include whippet-attrs.h -o $@ -c $*.c
-heap-conservative-parallel-generational-whippet-%: heap-conservative-parallel-generational-whippet-%.o heap-conservative-parallel-generational-whippet-%-gc.o gc-stack.o gc-options.o gc-platform.o gc-ephemeron-%.o
-	$(CC) $(LDFLAGS) -o $@ $^
-
-.PRECIOUS: $(ALL_TESTS)
+.PRECIOUS: $(ALL_TESTS) $(OBJS)
 
 clean:
 	rm -f $(ALL_TESTS)
+	rm -rf .deps obj bin
+
+# Clear some of the default rules.
+.SUFFIXES:
+.SECONDARY:
+%.c:;
+Makefile:;

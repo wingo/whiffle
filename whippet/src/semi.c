@@ -375,11 +375,15 @@ void gc_collect(struct gc_mutator *mut) {
   collect(mut, 0);
 }
 
+void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
+                             struct gc_edge edge, struct gc_ref new_val) {
+}
+
 static void collect_for_large_alloc(struct gc_mutator *mut, size_t npages) {
   collect_for_alloc(mut, npages * mutator_semi_space(mut)->page_size);
 }
 
-void* gc_allocate_large(struct gc_mutator *mut, size_t size) {
+static void* allocate_large(struct gc_mutator *mut, size_t size) {
   struct gc_heap *heap = mutator_heap(mut);
   struct large_object_space *space = heap_large_object_space(heap);
   struct semi_space *semi_space = heap_semi_space(heap);
@@ -400,7 +404,10 @@ void* gc_allocate_large(struct gc_mutator *mut, size_t size) {
   return ret;
 }
 
-void* gc_allocate_small(struct gc_mutator *mut, size_t size) {
+void* gc_allocate_slow(struct gc_mutator *mut, size_t size) {
+  if (size > gc_allocator_large_threshold())
+    return allocate_large(mut, size);
+
   struct semi_space *space = mutator_semi_space(mut);
   while (1) {
     uintptr_t addr = space->hp;
