@@ -1,4 +1,5 @@
 #!/bin/sh
+# -*- scheme -*-
 exec "${GUILE:-guile}" "$0" "$@"
 !#
 ;;; Lightweight Scheme compiler directly to C. -*- scheme -*-
@@ -25,26 +26,28 @@ exec "${GUILE:-guile}" "$0" "$@"
              (whiffle compile)
              (whiffle input))
 
-(define (usage whiffle port)
-  (format port "usage: ~a COMMAND ARG...\n" whiffle)
-  (format port "  available commands:\n")
-  (for-each
-   (match-lambda
-     ((name . runner)
-      (format port "    ~a\n" name)))
-   *commands*))
+(define (main args)
+  (define (usage port)
+    (format port "usage: ~a [OPTION...] [INPUT-FILE]\n" (car args))
+    (format port "  available options:\n")
+    (format port "    --expr/-e EXPR       compile EXPR instead of a file\n")
+    (format port "    --help/-h            print this help message\n")
+    (format port "    --compile-only/-c    only produce C file; don't make an executable\n")
+    (format port "    --optimize/-O LEVEL  optimize at level LEVEL; default is 2\n")
+    (format port "    --warn/-WLEVEL       warn at level LEVEL; default is 2\n")
+    (format port "    --output/-o FILE     write result to FILE\n"))
 
-(define compile-option-spec
-  '((version (single-char #\v) (value #f))
-    (help    (single-char #\h) (value #f))))
-
-(define (compile-command args)
   (define options
-    (getopt-long (cons "whiffle" args)
+    (getopt-long args
                  '((expr (single-char #\e) (value #t))
-                   (optimization-level (single-char #\O) (value #t))
-                   (warning-level (single-char #\W) (value #t))
+                   (help (single-char #\h) (value #f))
+                   (compile-only (single-char #\c) (value #f))
+                   (optimize (single-char #\O) (value #t))
+                   (warn (single-char #\W) (value #t))
                    (output (single-char #\o) (value #t)))))
+  (when (option-ref options 'help #f)
+    (usage (current-output-port))
+    (exit 0))
   (define in-expr
     (and=> (option-ref options 'expr #f)
            open-input-string))
@@ -52,50 +55,36 @@ exec "${GUILE:-guile}" "$0" "$@"
     (match (option-ref options '() #f)
       ((in)
        (if in-expr
-           (error "whiffle compile: can't compile file and expr at same time")
+           (error "whiffle: can't compile file and expr at same time")
            (open-input-file in)))
       (() (or in-expr
-              (error "whiffle compile: missing input file or -e expr\n")))
-      (_ (error "whiffle compile: too many input files\n"))))
+              (begin
+                (usage whiffle (current-error-port))
+                (exit 1))))
+      (_ (error "whiffle: too many input files\n"))))
   (define out
-    (cond
-     ((option-ref options 'output #f) => open-output-file)
-     (else (current-output-port))))
+    (option-ref options 'output #f))
   (define optimization-level
-    (or (and=> (option-ref options 'optimization-level "2")
+    (or (and=> (option-ref options 'optimize "2")
                string->number)
         (error "unexpected optimization level")))
   (define warning-level
-    (or (and=> (option-ref options 'warning-level "2")
+    (or (and=> (option-ref options 'warn "2")
                string->number)
         (error "unexpected warning level")))
-  (put-string out
-              (compile-to-c (read-and-expand in)
-                            #:optimization-level optimization-level
-                            #:warning-level warning-level))
-  (force-output out)
-  0)
+  (define c-code
+    (compile-to-c (read-and-expand in)
+                  #:optimization-level optimization-level
+                  #:warning-level warning-level))
 
-(define (help-command args)
-  (usage "whiffle" (current-output-port))
-  0)
-
-(define *commands*
-  `(("compile" . ,compile-command)
-    ("help" . ,help-command)))
-
-(define (main args)
-  (match args
-    ((whiffle command . args)
-     (match (assoc-ref *commands* command)
-       (#f
-        (format (current-error-port) "unknown command: ~a\n" command)
-        (usage whiffle (current-error-port))
-        1)
-       (runner (runner args))))
-    ((whiffle . _)
-     (usage whiffle (current-error-port))
-     1)))
+  (cond
+   ((option-ref options 'compile-only #f)
+    (let ((port (if out (open-output-file out) (current-output-port))))
+      (put-string port c-code)
+      (force-output port)))
+   (else
+    (error "unimplemented")))
+  (exit 0))
 
 (when (batch-mode?)
-  (exit (main (program-arguments))))
+  (main (program-arguments)))
