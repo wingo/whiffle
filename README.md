@@ -55,14 +55,14 @@ benchmarks) is not part of the compilation unit of the benchmark itself.
 So one example is to compile a function to C:
 
 ```
-$ whiffle compile -e '(lambda () 42)'
+$ whiffle -e '(lambda () 42)'
 ```
 
 Actually when you are running in the source tree, probably you want to
 wrap in `pre-inst-env`:
 
 ```
-$ ./pre-inst-env whiffle compile -e '(lambda () 42)'
+$ ./pre-inst-env whiffle -c -e '(lambda () 42)'
 #include "whiffle/vm.h"
 
 static VM F0 (VM vm, size_t nargs);

@@ -83,6 +83,9 @@ exec "${GUILE:-guile}" "$0" "$@"
       (put-string port c-code)
       (force-output port)))
    (else
+    ;; make temp dir; go there; write to .c file there
+    ;; make -f build.mk
+    ;; move output binary into place
     (error "unimplemented")))
   (exit 0))
 
