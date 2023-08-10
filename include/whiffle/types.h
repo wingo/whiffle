@@ -69,7 +69,7 @@ static inline Value value_from_heap_object(void *obj) {
 }
 
 static inline void* value_to_heap_object(Value v) {
-  if (!is_heap_object(v)) abort();
+  if (!is_heap_object(v)) __builtin_trap();
   return (void*)v.payload;
 }
 
@@ -78,7 +78,7 @@ static inline int is_fixnum(Value v) {
 }
 
 static inline intptr_t value_to_fixnum(Value v) {
-  if (!is_fixnum(v)) abort();
+  if (!is_fixnum(v)) __builtin_trap();
   return ((intptr_t)v.payload) >> 2;
 }
 
@@ -110,8 +110,8 @@ static inline uintptr_t make_forwarded_tag(Tagged* new_loc) {
   return FORWARDED_TAG | ((uintptr_t) new_loc);
 }
 
-static inline Tagged* tag_forwarded_addr(uintptr_t tag) {
-  return (Tagged*)(tag - FORWARDED_TAG);
+static inline uintptr_t tag_forwarded_addr(uintptr_t tag) {
+  return tag - FORWARDED_TAG;
 }
 
 static inline Value tagged_value(Tagged* tagged) {

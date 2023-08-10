@@ -8,7 +8,7 @@
 #include "gc-config.h"
 #include "gc-embedder-api.h"
 
-#define GC_EMBEDDER_EPHEMERON_HEADER struct gc_header header;
+#define GC_EMBEDDER_EPHEMERON_HEADER Tagged tag;
 
 static inline int
 gc_is_valid_conservative_ref_displacement(uintptr_t displacement) {
@@ -55,7 +55,7 @@ static inline void gc_trace_object(struct gc_ref ref,
 
     case VECTOR_TAG: {
       Vector *v = gc_ref_heap_object(ref);
-      size_t len = tagged_payload(&c->tag);
+      size_t len = tagged_payload(&v->tag);
       if (trace_edge) {
         for (size_t i = 0; i < len; i++)
           trace_edge(gc_edge(&v->vals[i]), heap, trace_data);
@@ -108,13 +108,14 @@ static inline void gc_trace_heap_roots(struct gc_heap_roots *roots,
 }
 
 static inline uintptr_t gc_object_forwarded_nonatomic(struct gc_ref ref) {
-  return tagged_forwarded(gc_ref_heap_object(ref));
+  Tagged *v = gc_ref_heap_object(ref);
+  return tag_is_forwarded(v->tag) ? tag_forwarded_addr(v->tag) : 0;
 }
 
 static inline void gc_object_forward_nonatomic(struct gc_ref ref,
                                                struct gc_ref new_ref) {
   Tagged *old = gc_ref_heap_object(ref);
-  old->tag = make_forwarded(gc_ref_heap_object(new_ref));
+  old->tag = make_forwarded_tag(gc_ref_heap_object(new_ref));
 }
 
 static inline void gc_object_set_remembered(struct gc_ref ref) {
