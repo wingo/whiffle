@@ -269,7 +269,7 @@ static inline Value vm_parse_value(VM vm, const char *val) {
     perror("failed to parse arg");
     exit(1);
   }
-  if (endptr == val || *endptr == '\0') {
+  if (endptr == val || *endptr != '\0') {
     fprintf(stderr, "failed to parse arg: %s\n", val);
     exit(1);
   }
