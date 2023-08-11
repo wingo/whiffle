@@ -55,7 +55,7 @@ benchmarks) is not part of the compilation unit of the benchmark itself.
 So one example is to compile a function to C:
 
 ```
-$ whiffle -e '(lambda () 42)'
+$ whiffle -c -e '(lambda () 42)'
 ```
 
 Actually when you are running in the source tree, probably you want to

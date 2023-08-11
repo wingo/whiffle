@@ -26,6 +26,9 @@ exec "${GUILE:-guile}" "$0" "$@"
              (whiffle compile)
              (whiffle input))
 
+(define whiffle
+  (dirname (dirname (canonicalize-path (current-filename)))))
+
 (define (main args)
   (define (usage port)
     (format port "usage: ~a [OPTION...] [INPUT-FILE]\n" (car args))
@@ -49,21 +52,45 @@ exec "${GUILE:-guile}" "$0" "$@"
     (usage (current-output-port))
     (exit 0))
   (define in-expr
-    (and=> (option-ref options 'expr #f)
-           open-input-string))
-  (define in
+    (option-ref options 'expr #f))
+  (define in-file
     (match (option-ref options '() #f)
       ((in)
-       (if in-expr
-           (error "whiffle: can't compile file and expr at same time")
-           (open-input-file in)))
-      (() (or in-expr
-              (begin
-                (usage whiffle (current-error-port))
-                (exit 1))))
-      (_ (error "whiffle: too many input files\n"))))
-  (define out
-    (option-ref options 'output #f))
+       (when in-expr
+         (error "whiffle: can't compile file and expr at same time"))
+       in)
+      (()
+       (unless in-expr
+         (usage (current-error-port))
+         (exit 1))
+       #f)
+      (_
+       (error "whiffle: too many input files\n"))))
+  (define in-port
+    (if in-expr
+        (open-input-string in-expr)
+        (open-input-file in-file)))
+  (define (strip-suffix str suffixes)
+    (match suffixes
+      (() #f)
+      ((suffix . suffixes)
+       (if (string-suffix? suffix str)
+           (substring str 0 (- (string-length str) (string-length suffix)))
+           (strip-suffix str suffixes)))))
+  (define compile-only?
+    (option-ref options 'compile-only #f))
+  (define out-file
+    (cond
+     ((option-ref options 'output #f))
+     ((not in-file)
+      (cond
+       (compile-only? #f)
+       (else
+        (format (current-error-port)
+                "warning: no output file name specified; defaulting to `out'\n")
+        "out")))
+     ((strip-suffix (basename in-file) '(".scm" ".ss")))
+     (else (string-append (basename in-file) ".bin"))))
   (define optimization-level
     (or (and=> (option-ref options 'optimize "2")
                string->number)
@@ -73,20 +100,40 @@ exec "${GUILE:-guile}" "$0" "$@"
                string->number)
         (error "unexpected warning level")))
   (define c-code
-    (compile-to-c (read-and-expand in)
+    (compile-to-c (read-and-expand in-port)
                   #:optimization-level optimization-level
                   #:warning-level warning-level))
 
   (cond
-   ((option-ref options 'compile-only #f)
-    (let ((port (if out (open-output-file out) (current-output-port))))
+   (compile-only?
+    (let ((port (if out-file
+                    (open-output-file out-file)
+                    (current-output-port))))
       (put-string port c-code)
       (force-output port)))
    (else
-    ;; make temp dir; go there; write to .c file there
-    ;; make -f build.mk
-    ;; move output binary into place
-    (error "unimplemented")))
+    (unless out-file
+      (error "missing output file; pass --output / -o"))
+    (let* ((dir (mkdtemp (in-vicinity (or (getenv "TMPDIR") "/tmp")
+                                      "whiffle-XXXXXX"))))
+      (call-with-output-file (in-vicinity dir "out.c")
+        (lambda (port)
+          (put-string port c-code)))
+      (define status
+        (system* "make" "-C" dir "-f" (in-vicinity whiffle "build.mk") "out"))
+      (unless (zero? (status:exit-val status))
+        (format (current-error-port)
+                "error: failed to compile generated C; leaving temp dir ~a\n"
+                dir)
+        (format (current-error-port)
+                "error: try again via `make -C ~a -f ~a out\n"
+                dir (in-vicinity whiffle "build.mk"))
+        (exit 1))
+      (rename-file (in-vicinity dir "out") out-file)
+      (system* "make" "-C" dir "-f" (in-vicinity whiffle "build.mk")
+               "clean")
+      (delete-file (in-vicinity dir "out.c"))
+      (rmdir dir))))
   (exit 0))
 
 (when (batch-mode?)

@@ -1,5 +1,6 @@
-WHIPPET=../whippet/
-WHIFFLE=../
+here:=$(dir $(lastword $(MAKEFILE_LIST)))
+WHIPPET=$(here)whippet/
+WHIFFLE=$(here)
 
 include $(WHIPPET)embed.mk
 
@@ -10,6 +11,9 @@ out.o: out.c
 	$(GC_COMPILE) $(WHIFFLE_CFLAGS) $(GC_TO_EMBEDDER_CFLAGS) -c $<
 out: out.o $(GC_OBJS)
 	$(GC_LINK) $(GC_LIBS) $^
+
+clean: 
+	rm -f out out.o $(GC_OBJS)
 
 # Clear some of the default rules.
 .SUFFIXES:
