@@ -23,11 +23,7 @@ exec "${GUILE:-guile}" "$0" "$@"
              (ice-9 getopt-long)
              (ice-9 match)
              (ice-9 textual-ports)
-             (whiffle compile)
-             (whiffle input))
-
-(define whiffle
-  (dirname (dirname (canonicalize-path (current-filename)))))
+             (whiffle run))
 
 (define (main args)
   (define (usage port)
@@ -86,61 +82,11 @@ exec "${GUILE:-guile}" "$0" "$@"
     (or (and=> (option-ref options 'warn "2")
                string->number)
         (error "unexpected warning level")))
-  (when (and (or out-file assemble?) (pair? args-to-scheme))
-    (error "unexpected args while only compiling or assembling"))
-  (define c-code
-    (compile-to-c (read-and-expand in-port)
-                  #:optimization-level optimization-level
-                  #:warning-level warning-level))
-
-  (cond
-   (assemble?
-    (let ((port (if out-file
-                    (open-output-file out-file)
-                    (current-output-port))))
-      (put-string port c-code)
-      (force-output port)))
-   (else
-    (let* ((dir (mkdtemp (in-vicinity (or (getenv "TMPDIR") "/tmp")
-                                      "whiffle-XXXXXX"))))
-      (call-with-output-file (in-vicinity dir "out.c")
-        (lambda (port)
-          (put-string port c-code)))
-      (let ((status (system* "make" "--no-print-directory" "-C" dir
-                             "-f" (in-vicinity whiffle "build.mk") "V=0"
-                             "out")))
-        (unless (zero? (status:exit-val status))
-          (format (current-error-port)
-                  "error: failed to compile generated C; leaving temp dir ~a\n"
-                  dir)
-          (format (current-error-port)
-                  "error: try again via `make -C ~a -f ~a out\n"
-                  dir (in-vicinity whiffle "build.mk"))
-          (exit 1)))
-      (cond
-       (out-file
-        (rename-file (in-vicinity dir "out") out-file))
-       (else
-        (let ((status (apply system* (in-vicinity dir "out") args-to-scheme)))
-          (cond
-           ((status:term-sig status)
-            => (lambda (sig)
-                 (format (current-error-port)
-                         "error when running scheme: killed (~a)\n" sig)
-                 (exit 1)))
-           ((status:stop-sig status)
-            => (lambda (sig)
-                 (format (current-error-port)
-                         "error when running scheme: stopped (~a)\n" sig)
-                 (exit 1)))
-           ((not (zero? (status:exit-val status)))
-            (format (current-error-port)
-                    "error when running scheme: failed (~a)\n" (status:exit-val status))
-            (exit 1))))))
-      (system* "make" "--no-print-directory" "-C" dir
-               "-f" (in-vicinity whiffle "build.mk") "clean" "V=0")
-      (delete-file (in-vicinity dir "out.c"))
-      (rmdir dir))))
+  (define-values results
+    (run #:input in-port #:output-file out-file #:assemble? assemble?
+         #:args args-to-scheme #:optimization-level optimization-level
+         #:warning-level warning-level))
+  (for-each (lambda (datum) (write datum) (newline)) results)
   (exit 0))
 
 (when (batch-mode?)
