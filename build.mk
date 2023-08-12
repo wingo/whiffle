@@ -13,7 +13,7 @@ out: out.o $(GC_OBJS)
 	$(GC_LINK) $(GC_LIBS) $^
 
 clean: 
-	rm -f out out.o $(GC_OBJS)
+	$(GC_V)rm -f out out.o $(GC_OBJS)
 
 # Clear some of the default rules.
 .SUFFIXES:

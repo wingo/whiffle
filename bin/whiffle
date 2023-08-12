@@ -31,20 +31,21 @@ exec "${GUILE:-guile}" "$0" "$@"
 
 (define (main args)
   (define (usage port)
-    (format port "usage: ~a [OPTION...] [INPUT-FILE]\n" (car args))
+    (format port "usage: ~a [OPTION...] [INPUT-FILE] ARG...\n" (car args))
     (format port "  available options:\n")
-    (format port "    --expr/-e EXPR       compile EXPR instead of a file\n")
+    (format port "    --expr/-e EXPR       input is EXPR instead of a file\n")
     (format port "    --help/-h            print this help message\n")
-    (format port "    --compile-only/-c    only produce C file; don't make an executable\n")
+    (format port "    --output/-o FILE     just compile the input, and write to FILE\n")
+    (format port "    --assemble/-S        only produce C file; don't make an executable\n")
     (format port "    --optimize/-O LEVEL  optimize at level LEVEL; default is 2\n")
-    (format port "    --warn/-WLEVEL       warn at level LEVEL; default is 2\n")
-    (format port "    --output/-o FILE     write result to FILE\n"))
+    (format port "    --warn/-WLEVEL       warn at level LEVEL; default is 2\n"))
 
   (define options
     (getopt-long args
                  '((expr (single-char #\e) (value #t))
                    (help (single-char #\h) (value #f))
-                   (compile-only (single-char #\c) (value #f))
+                   (assemble (single-char #\S) (value #f))
+                   (compile (single-char #\c) (value #f))
                    (optimize (single-char #\O) (value #t))
                    (warn (single-char #\W) (value #t))
                    (output (single-char #\o) (value #t)))))
@@ -53,19 +54,15 @@ exec "${GUILE:-guile}" "$0" "$@"
     (exit 0))
   (define in-expr
     (option-ref options 'expr #f))
-  (define in-file
-    (match (option-ref options '() #f)
-      ((in)
-       (when in-expr
-         (error "whiffle: can't compile file and expr at same time"))
-       in)
-      (()
-       (unless in-expr
-         (usage (current-error-port))
-         (exit 1))
-       #f)
-      (_
-       (error "whiffle: too many input files\n"))))
+  (define-values (in-file args-to-scheme)
+    (let ((args (option-ref options '() #f)))
+      (if in-expr
+          (values #f args)
+          (match args
+            ((in . args) (values in args))
+            (()
+             (usage (current-error-port))
+             (exit 1))))))
   (define in-port
     (if in-expr
         (open-input-string in-expr)
@@ -77,20 +74,10 @@ exec "${GUILE:-guile}" "$0" "$@"
        (if (string-suffix? suffix str)
            (substring str 0 (- (string-length str) (string-length suffix)))
            (strip-suffix str suffixes)))))
-  (define compile-only?
-    (option-ref options 'compile-only #f))
+  (define assemble?
+    (option-ref options 'assemble #f))
   (define out-file
-    (cond
-     ((option-ref options 'output #f))
-     ((not in-file)
-      (cond
-       (compile-only? #f)
-       (else
-        (format (current-error-port)
-                "warning: no output file name specified; defaulting to `out'\n")
-        "out")))
-     ((strip-suffix (basename in-file) '(".scm" ".ss")))
-     (else (string-append (basename in-file) ".bin"))))
+    (option-ref options 'output #f))
   (define optimization-level
     (or (and=> (option-ref options 'optimize "2")
                string->number)
@@ -99,39 +86,59 @@ exec "${GUILE:-guile}" "$0" "$@"
     (or (and=> (option-ref options 'warn "2")
                string->number)
         (error "unexpected warning level")))
+  (when (and (or out-file assemble?) (pair? args-to-scheme))
+    (error "unexpected args while only compiling or assembling"))
   (define c-code
     (compile-to-c (read-and-expand in-port)
                   #:optimization-level optimization-level
                   #:warning-level warning-level))
 
   (cond
-   (compile-only?
+   (assemble?
     (let ((port (if out-file
                     (open-output-file out-file)
                     (current-output-port))))
       (put-string port c-code)
       (force-output port)))
    (else
-    (unless out-file
-      (error "missing output file; pass --output / -o"))
     (let* ((dir (mkdtemp (in-vicinity (or (getenv "TMPDIR") "/tmp")
                                       "whiffle-XXXXXX"))))
       (call-with-output-file (in-vicinity dir "out.c")
         (lambda (port)
           (put-string port c-code)))
-      (define status
-        (system* "make" "-C" dir "-f" (in-vicinity whiffle "build.mk") "out"))
-      (unless (zero? (status:exit-val status))
-        (format (current-error-port)
-                "error: failed to compile generated C; leaving temp dir ~a\n"
-                dir)
-        (format (current-error-port)
-                "error: try again via `make -C ~a -f ~a out\n"
-                dir (in-vicinity whiffle "build.mk"))
-        (exit 1))
-      (rename-file (in-vicinity dir "out") out-file)
-      (system* "make" "-C" dir "-f" (in-vicinity whiffle "build.mk")
-               "clean")
+      (let ((status (system* "make" "--no-print-directory" "-C" dir
+                             "-f" (in-vicinity whiffle "build.mk") "V=0"
+                             "out")))
+        (unless (zero? (status:exit-val status))
+          (format (current-error-port)
+                  "error: failed to compile generated C; leaving temp dir ~a\n"
+                  dir)
+          (format (current-error-port)
+                  "error: try again via `make -C ~a -f ~a out\n"
+                  dir (in-vicinity whiffle "build.mk"))
+          (exit 1)))
+      (cond
+       (out-file
+        (rename-file (in-vicinity dir "out") out-file))
+       (else
+        (let ((status (apply system* (in-vicinity dir "out") args-to-scheme)))
+          (cond
+           ((status:term-sig status)
+            => (lambda (sig)
+                 (format (current-error-port)
+                         "error when running scheme: killed (~a)\n" sig)
+                 (exit 1)))
+           ((status:stop-sig status)
+            => (lambda (sig)
+                 (format (current-error-port)
+                         "error when running scheme: stopped (~a)\n" sig)
+                 (exit 1)))
+           ((not (zero? (status:exit-val status)))
+            (format (current-error-port)
+                    "error when running scheme: failed (~a)\n" (status:exit-val status))
+            (exit 1))))))
+      (system* "make" "--no-print-directory" "-C" dir
+               "-f" (in-vicinity whiffle "build.mk") "clean" "V=0")
       (delete-file (in-vicinity dir "out.c"))
       (rmdir dir))))
   (exit 0))
