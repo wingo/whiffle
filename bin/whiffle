@@ -38,7 +38,7 @@ exec "${GUILE:-guile}" "$0" "$@"
     (format port "    --output/-o FILE     just compile the input, and write to FILE\n")
     (format port "    --assemble/-S        only produce C file; don't make an executable\n")
     (format port "    --optimize/-O LEVEL  optimize at level LEVEL; default is 2\n")
-    (format port "    --warn/-WLEVEL       warn at level LEVEL; default is 2\n"))
+    (format port "    --warn/-W LEVEL      warn at level LEVEL; default is 2\n"))
 
   (define options
     (getopt-long args
