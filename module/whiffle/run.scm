@@ -45,7 +45,7 @@
         (error "expected EOF" eof)))
     datum))
 
-(define* (run #:key input output-file assemble? args
+(define* (run #:key input output-file assemble? (args '())
               (optimization-level 2) (warning-level 2)
               (fail (lambda (format-string . args)
                       (apply format (current-error-port) format-string args)
