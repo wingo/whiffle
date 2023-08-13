@@ -39,7 +39,7 @@
 (define (read* port)
   (match (read port)
     ((? eof-object?)
-     (error "file is empty" file))
+     (error "file is empty" (port-filename port)))
     (expr
      `(begin ,expr
              . ,(let lp ()
