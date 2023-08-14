@@ -15,7 +15,7 @@
 static inline intptr_t fixnum_value(Value v) { return value_to_fixnum(v); }
 static inline Value make_fixnum(intptr_t v) { return value_from_fixnum(v); }
 
-static VM vm_prepare_thread(Thread *thread, size_t initial_nargs) {
+static VM vm_prepare_main_thread(Thread *thread, size_t initial_nargs) {
   size_t bytes = 2 * 1024 * 1024;
   if (initial_nargs > bytes / sizeof(Value)) abort();
   void *mem = mmap(NULL, bytes, PROT_READ|PROT_WRITE,
@@ -26,7 +26,16 @@ static VM vm_prepare_thread(Thread *thread, size_t initial_nargs) {
   }
   thread->sp_base = (Value*)(((char *)mem) + bytes);
   thread->sp_limit = mem;
-  thread->mut = NULL;
+  struct gc_options *options = gc_allocate_options();
+  char *options_str = getenv("GC_OPTIONS");
+  if (options_str) {
+    if (!gc_options_parse_and_set_many(options, options_str)) {
+      fprintf(stderr, "failed to set options: %s\n", options_str);
+      GC_CRASH();
+    }
+  }
+  if (!gc_init(options, NULL, &thread->heap, &thread->mut))
+    GC_CRASH();
   Value *sp = thread->sp_base - initial_nargs;
   VM vm = (VM){thread, sp};
   thread->roots.safepoint = vm;

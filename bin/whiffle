@@ -33,6 +33,7 @@ exec "${GUILE:-guile}" "$0" "$@"
     (format port "    --help/-h            print this help message\n")
     (format port "    --output/-o FILE     just compile the input, and write to FILE\n")
     (format port "    --assemble/-S        only produce C file; don't make an executable\n")
+    (format port "    --preserve-builddir  keep the build directory around\n")
     (format port "    --optimize/-O LEVEL  optimize at level LEVEL; default is 2\n")
     (format port "    --warn/-W LEVEL      warn at level LEVEL; default is 2\n"))
 
@@ -41,7 +42,7 @@ exec "${GUILE:-guile}" "$0" "$@"
                  '((expr (single-char #\e) (value #t))
                    (help (single-char #\h) (value #f))
                    (assemble (single-char #\S) (value #f))
-                   (compile (single-char #\c) (value #f))
+                   (preserve-builddir (value #f))
                    (optimize (single-char #\O) (value #t))
                    (warn (single-char #\W) (value #t))
                    (output (single-char #\o) (value #t)))))
@@ -72,6 +73,8 @@ exec "${GUILE:-guile}" "$0" "$@"
            (strip-suffix str suffixes)))))
   (define assemble?
     (option-ref options 'assemble #f))
+  (define preserve-builddir?
+    (option-ref options 'preserve-builddir #f))
   (define out-file
     (option-ref options 'output #f))
   (define optimization-level
@@ -85,6 +88,7 @@ exec "${GUILE:-guile}" "$0" "$@"
   (define-values results
     (run #:input in-port #:output-file out-file #:assemble? assemble?
          #:args args-to-scheme #:optimization-level optimization-level
+         #:preserve-builddir? preserve-builddir?
          #:warning-level warning-level))
   (for-each (lambda (datum) (write datum) (newline)) results)
   (exit 0))

@@ -46,6 +46,7 @@
     datum))
 
 (define* (run #:key input output-file assemble? (args '())
+              preserve-builddir?
               (optimization-level 2) (warning-level 2)
               (fail (lambda (format-string . args)
                       (apply format (current-error-port) format-string args)
@@ -58,7 +59,7 @@
                   #:warning-level warning-level))
 
   (cond
-   (assemble?
+   ((and assemble? (not preserve-builddir?))
     (let ((port (if output-file
                     (open-output-file output-file)
                     (current-output-port))))
@@ -70,13 +71,17 @@
         (lambda (port)
           (put-string port c-code)))
       (define build.mk (whiffle-build.mk))
-      (let ((status (system* "make" "--no-print-directory" "-C" dir
-                             "-f" build.mk "V=0" "out")))
-        (unless (zero? (status:exit-val status))
-          (fail (string-append
-                 "error: failed to compile generated C; leaving temp dir ~a\n"
-                 "error: try again via `make -C ~a -f ~a out\n")
-                dir dir build.mk)))
+      (call-with-output-file (in-vicinity dir "Makefile")
+        (lambda (port)
+          (format port "include ~a\n" build.mk)))
+      (unless assemble?
+        (let ((status (system* "make" "--no-print-directory" "-C" dir
+                               "V=0" "out")))
+          (unless (zero? (status:exit-val status))
+            (fail (string-append
+                   "error: failed to compile generated C; leaving temp dir ~a\n"
+                   "error: try again via `make -C ~a out\n")
+                  dir dir))))
       (define k
         (cond
          (output-file
@@ -103,8 +108,12 @@
                (lambda ()
                  (fail "error when running scheme: failed (~a)\n"
                        (status:exit-val status))))))))))
-      (system* "make" "--no-print-directory" "-C" dir "-f" build.mk
-               "clean" "V=0")
-      (delete-file (in-vicinity dir "out.c"))
-      (rmdir dir)
+      (cond
+       (preserve-builddir?
+        (format #t "preserving builddir; build via `make -C ~a out`\n" dir))
+       (else
+        (system* "make" "--no-print-directory" "-C" dir "clean" "V=0")
+        (delete-file (in-vicinity dir "out.c"))
+        (delete-file (in-vicinity dir "Makefile"))
+        (rmdir dir)))
       (k)))))

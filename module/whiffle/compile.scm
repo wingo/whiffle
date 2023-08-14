@@ -156,9 +156,9 @@
                       (- base i 1)))
             (iota nargs))
   (<-code asm "  return vm_closure_code(vm.sp[~a])(vm_trim(vm, ~a), ~a);\n"
-          (1- frame-size) nargs (- frame-size nargs)))
+          (1- frame-size) (- frame-size nargs) nargs))
 (define (emit-call asm base nargs)
-  (<-code asm "  vm = vm_closure_code(sp[~a])(vm_trim(vm, ~a), ~a);\n"
+  (<-code asm "  vm = vm_closure_code(vm.sp[~a])(vm_trim(vm, ~a), ~a);\n"
           (1- base) (- base nargs) nargs))
 (define (emit-restore-sp asm slots)
   (<-code asm "  vm.sp -= ~a;\n" slots))
@@ -662,7 +662,7 @@ lambda-case clause @var{clause}."
          syms vals)
         env))
 
-    (define (for-test exp kt env)
+    (define (for-test exp kf env)
       (match exp
         (($ <primcall> src name args)
          (let ((prim (lookup-primitive name)))
@@ -671,9 +671,9 @@ lambda-case clause @var{clause}."
            (let ((env (push-args args env))
                  (emit (primitive-emitter prim)))
              (match (primitive-nargs prim)
-               (1 (emit asm (env-sp-offset env) kt))
+               (1 (emit asm (env-sp-offset env) kf))
                (2 (emit asm (env-sp-offset (cdr env)) (env-sp-offset env)
-                        kt))))))))
+                        kf))))))))
 
     (define (for-value-at exp env dst)
       (define (maybe-mov dst*)
@@ -715,7 +715,7 @@ lambda-case clause @var{clause}."
                 (post-call (push-temp env))
                 (dst (env-sp-offset post-call)))
            (emit-call asm base (1+ (length args)))
-           (emit-restore-sp asm (- frame-size (env-sp-offset post-call)))
+           (emit-restore-sp asm dst)
            (maybe-mov dst)))
 
         (($ <primcall> src name args)
@@ -833,11 +833,11 @@ lambda-case clause @var{clause}."
            (emit-tail-call asm frame-size base nargs)))
 
         (($ <conditional> src test consequent alternate)
-         (let ((kt (make-label asm)))
-           (for-test test kt env)
-           (for-tail alternate env)
-           (emit-bind-label asm kt)
-           (for-tail consequent env)))
+         (let ((kf (make-label asm)))
+           (for-test test kf env)
+           (for-tail consequent env)
+           (emit-bind-label asm kf)
+           (for-tail alternate env)))
 
         (($ <seq> src head tail)
          (for-effect head env)
@@ -914,7 +914,7 @@ lambda-case clause @var{clause}."
                                  (_ (values))))
                              (asm-constants asm))
               (<-code asm "  Thread thread;\n")
-              (<-code asm "  VM vm = vm_prepare_thread(&thread, ~a);\n" (1+ nargs))
+              (<-code asm "  VM vm = vm_prepare_main_thread(&thread, ~a);\n" (1+ nargs))
               (emit-constant-ref asm nargs (make-static-closure label))
               (for-each
                (lambda (i)

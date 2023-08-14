@@ -52,17 +52,25 @@ will take its arguments from the command line.  This way you can be sure
 that any input to the benchmark (because Whiffle is used to make
 benchmarks) is not part of the compilation unit of the benchmark itself.
 
-So one example is to compile a function to C:
+So one example is to compile a function to C, then run the compiled
+file:
 
 ```
-$ whiffle -c -e '(lambda () 42)'
+$ whiffle -e '(lambda () 42)'
 ```
 
 Actually when you are running in the source tree, probably you want to
 wrap in `pre-inst-env`:
 
 ```
-$ ./pre-inst-env whiffle -c -e '(lambda () 42)'
+$ ./pre-inst-env whiffle -e '(lambda () 42)'
+42
+```
+
+To see the generated C, pass `-S` to `whiffle` command:
+
+```
+$ ./pre-inst-env whiffle -S -e '(lambda () 42)'
 #include "whiffle/vm.h"
 
 static VM F0 (VM vm, size_t nargs);
@@ -91,16 +99,15 @@ int main (int argc, char *argv[]) {
 The generated C uses operations from
 [`whiffle/vm.h`](./include/whiffle/vm.h).
 
-Compiling... I have gotten it to compile but I need to leave this here
-for tonight; will come back to it later.  See, Whiffle is mainly made
-for [Whippet](https://github.com/wingo/whippet-gc/).  Whippet is an
-abstract GC API, and also a number of implementations that can be
-selected at compile-time, and also one blessed implementation which is
-itself called Whippet.  A little confusing, but there you go.  Whippet
-is designed to be an embed-only library.  I'm still working on the
-Whippet compilation ergonomics; right now to compile Whippet, besides
-some generic files you need to compile a the GC implementation that you
-select, but specialized to the program at hand: how it represents tagged
-values, how to install a forwarding pointer, and so on.  This will work!
-But it is a mess for the moment.  Come back in a month and see where we
-are :)
+To write the compiled output to a binary instead of running it directly,
+use `-o`:
+
+```
+$ ./pre-inst-env whiffle -o out -e '(lambda () 42)'
+$ ./out
+42
+```
+
+See `whiffle --help` for more.
+
+## 

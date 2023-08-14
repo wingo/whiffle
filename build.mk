@@ -2,6 +2,8 @@ here:=$(dir $(lastword $(MAKEFILE_LIST)))
 WHIPPET=$(here)whippet/
 WHIFFLE=$(here)
 
+all: out
+
 include $(WHIPPET)embed.mk
 
 WHIFFLE_CFLAGS=-I $(WHIFFLE)include

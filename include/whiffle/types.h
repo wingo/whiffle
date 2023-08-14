@@ -57,6 +57,7 @@ typedef struct Thread {
   Value *sp_base;
   Value *sp_limit;
   struct gc_mutator *mut;
+  struct gc_heap *heap;
   struct gc_mutator_roots roots;
 } Thread;
 
