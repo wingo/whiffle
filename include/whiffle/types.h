@@ -28,14 +28,17 @@ typedef struct Closure { Tagged tag; Code code; Value free_vars[]; } Closure;
    would be better if the fixnum tag were zero, but that's not how Guile
    does it.  */
 #define FIXNUM_VALUE_TAG ((uintptr_t)2)    /* 0b0010 */
+
+#define PAIR_MASK        ((uintptr_t)0x01) /* 0b0001 */
 #define PAIR_TAG         ((uintptr_t)0)    /* 0b0000 */
+
+#define FORWARDED_MASK   ((uintptr_t)0x07) /* 0b0111 */
+#define FORWARDED_TAG    ((uintptr_t)0x03) /* 0b0011 */
+
 #define BOX_TAG          ((uintptr_t)0x05) /* 0b0101 */
 #define VECTOR_TAG       ((uintptr_t)0x07) /* 0b0111 */
 #define CLOSURE_TAG      ((uintptr_t)0x0d) /* 0b1101 */
 #define BUSY_TAG         ((uintptr_t)0x0f) /* 0b1111 */
-
-#define FORWARDED_MASK   ((uintptr_t)0x07) /* 0b0111 */
-#define FORWARDED_TAG    ((uintptr_t)0x03) /* 0b0011 */
 
 #define REMEMBERED_TAG   ((uintptr_t)0x10)
 
@@ -48,6 +51,7 @@ typedef struct Closure { Tagged tag; Code code; Value free_vars[]; } Closure;
 #define IMMEDIATE_FALSE       ((Value){(uintptr_t)0x004})
 #define IMMEDIATE_TRUE        ((Value){(uintptr_t)0x404})
 #define IMMEDIATE_UNSPECIFIED ((Value){(uintptr_t)0x804})
+#define IMMEDIATE_NULL        ((Value){(uintptr_t)0xc04})
 
 struct gc_mutator_roots {
   VM safepoint;
@@ -89,6 +93,10 @@ static inline Value value_from_fixnum(intptr_t v) {
 
 static inline uint8_t tagged_kind(Tagged* tagged) {
   return tagged->tag & 0x0f;
+}
+
+static inline uint8_t tagged_is_pair(Tagged* tagged) {
+  return (tagged->tag & PAIR_MASK) == PAIR_TAG;
 }
 
 static inline int tagged_remembered(Tagged* tagged) {

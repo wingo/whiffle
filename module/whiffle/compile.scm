@@ -110,6 +110,7 @@
     ((? unspecified?) "IMMEDIATE_UNSPECIFIED")
     (#f "IMMEDIATE_FALSE")
     (#t "IMMEDIATE_TRUE")
+    (() "IMMEDIATE_NULL")
     (_ (static-ref (or (hash-ref (asm-constants asm) const)
                        (intern-new-constant))))))
 
@@ -120,7 +121,7 @@
   (if (zero? nfree)
       (emit-constant-ref asm dst (make-static-closure func-label))
       (<-code asm
-              " vm.sp[~a] = vm_make_closure (vm_trim(vm, ~a), &F~a, ~a);\n"
+              "  vm.sp[~a] = vm_make_closure (vm_trim(vm, ~a), &F~a, ~a);\n"
               dst junk-slots func-label nfree)))
 
 (define (emit-closure-init/bound asm closure-idx free-idx val)
@@ -202,8 +203,8 @@
   (<-code asm "  vm_vector_set(vm.sp[~a], vm.sp[~a], vm.sp[~a]);\n" v idx val))
 (define (emit-jump asm target)
   (<-code asm "  goto L~a;\n" target))
-(define (emit-jump-if-not asm val target)
-  (<-code asm "  if (!vm_is_true(vm.sp[~a])) goto L~a;\n" val target))
+(define (emit-jump-if-not-false asm val target)
+  (<-code asm "  if (!vm_is_false(vm.sp[~a])) goto L~a;\n" val target))
 (define (emit-jump-if-not-pair asm val target)
   (<-code asm "  if (!vm_is_pair(vm.sp[~a])) goto L~a;\n" val target))
 (define (emit-jump-if-not-vector asm val target)
@@ -266,7 +267,7 @@
   (vector-ref       #:nargs 2 #:has-result? #t #:emit emit-vector-ref)
   (vector-set!      #:nargs 3                  #:emit emit-vector-set)
   
-  (not              #:nargs 1 #:predicate? #t  #:emit emit-jump-if-not)
+  (false?           #:nargs 1 #:predicate? #t  #:emit emit-jump-if-not-false)
   (eq?              #:nargs 2 #:predicate? #t  #:emit emit-jump-if-not-eq)
   (<                #:nargs 2 #:predicate? #t  #:emit emit-jump-if-not-<)
   (=                #:nargs 2 #:predicate? #t  #:emit emit-jump-if-not-=)
@@ -353,7 +354,7 @@
            (($ <conditional> _ test (? false?) (? true?))
             (make-conditional src test alternate consequent))
            (_
-            (make-conditional src (make-primcall src 'not (list test))
+            (make-conditional src (make-primcall src 'false? (list test))
                               alternate consequent)))))
 
       ((or ($ <module-ref>) ($ <toplevel-ref>)
@@ -391,13 +392,17 @@
       ;; Remaining cases are all primcalls.
       (($ <primcall> src name args)
        (match (cons name args)
+         (('null? x) (for-tail (make-primcall src 'eq?
+                                              (list x (make-const src '())))))
          (('>= a b) (for-tail (make-primcall src '<= (list b a))))
          (('>  a b) (for-tail (make-primcall src '<  (list b a))))
          ;; As long as we have no NaN, we can turn <= into <.
          (('<= a b) (for-tail
                      (make-primcall src 'not
                                     (list (make-primcall src '< (list b a))))))
-         (('not x)  (for-tail (make-conditional src exp
+         (('not x)  (for-tail (make-conditional src
+                                                (make-primcall src 'false?
+                                                               (list x))
                                                 (make-const src #f)
                                                 (make-const src #t))))
 

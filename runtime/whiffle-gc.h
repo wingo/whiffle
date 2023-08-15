@@ -20,6 +20,17 @@ gc_is_valid_conservative_ref_displacement(uintptr_t displacement) {
 #endif
 }
 
+static inline void trace_tagged_edge(void (*trace_edge)(struct gc_edge edge,
+                                                        struct gc_heap *heap,
+                                                        void *trace_data),
+                                     struct gc_edge edge,
+                                     struct gc_heap *heap,
+                                     void *trace_data) {
+  Value v = { gc_ref_value(gc_edge_ref(edge)) };
+  if (is_heap_object(v))
+    trace_edge(edge, heap, trace_data);
+}
+
 static inline void gc_trace_object(struct gc_ref ref,
                                    void (*trace_edge)(struct gc_edge edge,
                                                       struct gc_heap *heap,
@@ -31,22 +42,22 @@ static inline void gc_trace_object(struct gc_ref ref,
   // Shouldn't get here.
   GC_CRASH();
 #else
-  switch (tagged_kind(gc_ref_heap_object(ref))) {
-    case PAIR_TAG: {
-      Pair *p = gc_ref_heap_object(ref);
-      if (trace_edge) {
-        trace_edge(gc_edge(&p->tag), heap, trace_data);
-        trace_edge(gc_edge(&p->cdr), heap, trace_data);
-      }
-      if (size)
-        *size = sizeof(*p);
-      return;
+  if (tagged_is_pair(gc_ref_heap_object(ref))) {
+    Pair *p = gc_ref_heap_object(ref);
+    if (trace_edge) {
+      trace_tagged_edge(trace_edge, gc_edge(&p->tag), heap, trace_data);
+      trace_tagged_edge(trace_edge, gc_edge(&p->cdr), heap, trace_data);
     }
+    if (size)
+      *size = sizeof(*p);
+    return;
+  }
 
+  switch (tagged_kind(gc_ref_heap_object(ref))) {
     case BOX_TAG: {
       Box *b = gc_ref_heap_object(ref);
       if (trace_edge) {
-        trace_edge(gc_edge(&b->val), heap, trace_data);
+        trace_tagged_edge(trace_edge, gc_edge(&b->val), heap, trace_data);
       }
       if (size)
         *size = sizeof(*b);
@@ -58,7 +69,7 @@ static inline void gc_trace_object(struct gc_ref ref,
       size_t len = tagged_payload(&v->tag);
       if (trace_edge) {
         for (size_t i = 0; i < len; i++)
-          trace_edge(gc_edge(&v->vals[i]), heap, trace_data);
+          trace_tagged_edge(trace_edge, gc_edge(&v->vals[i]), heap, trace_data);
       }
       if (size)
         *size = sizeof(*v) + sizeof(Value) * len;
@@ -70,7 +81,8 @@ static inline void gc_trace_object(struct gc_ref ref,
       size_t nfree = tagged_payload(&c->tag);
       if (trace_edge) {
         for (size_t i = 0; i < nfree; i++)
-          trace_edge(gc_edge(&c->free_vars[i]), heap, trace_data);
+          trace_tagged_edge(trace_edge, gc_edge(&c->free_vars[i]), heap,
+                            trace_data);
       }
       if (size)
         *size = sizeof(*c) + sizeof(Value) * nfree;
@@ -93,7 +105,7 @@ static inline void gc_trace_mutator_roots(struct gc_mutator_roots *roots,
     for (Value *sp = roots->safepoint.sp;
          sp < roots->safepoint.thread->sp_base;
          sp++)
-      trace_edge(gc_edge(sp), heap, trace_data);
+      trace_tagged_edge(trace_edge, gc_edge(sp), heap, trace_data);
   }
 }
 

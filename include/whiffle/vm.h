@@ -36,6 +36,7 @@ static VM vm_prepare_main_thread(Thread *thread, size_t initial_nargs) {
   }
   if (!gc_init(options, NULL, &thread->heap, &thread->mut))
     GC_CRASH();
+  gc_mutator_set_roots(thread->mut, &thread->roots);
   Value *sp = thread->sp_base - initial_nargs;
   VM vm = (VM){thread, sp};
   thread->roots.safepoint = vm;
@@ -151,7 +152,7 @@ static inline Value vm_cons(VM vm, Value a, Value b) {
 }
 
 static inline int is_pair(Value x) {
-  return is_heap_object(x) && tagged_kind(value_to_heap_object(x)) == PAIR_TAG;
+  return is_heap_object(x) && tagged_is_pair(value_to_heap_object(x));
 }
 
 static inline Value vm_car(Value pair) {
@@ -240,8 +241,8 @@ static inline void vm_vector_set(Value vector, Value idx, Value val) {
   v->vals[c_idx] = val;
 }
 
-static inline int vm_is_true(Value val) {
-  return val.payload = IMMEDIATE_TRUE.payload;
+static inline int vm_is_false(Value val) {
+  return val.payload == IMMEDIATE_FALSE.payload;
 }
 
 static inline int vm_is_pair(Value val) {
