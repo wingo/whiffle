@@ -80,4 +80,11 @@ $ GC_OPTIONS=parallelism=1 ./pre-inst-env whiffle examples/peano-fib.scm 25
 Again, pass `-o` to write a binary instead of running the compiled file
 directly.
 
+Maybe you want to choose a different GC?  Pass `--gc`:
+
+```
+$ ./pre-inst-env whiffle --gc=whippet examples/peano-fib.scm 25
+121393
+```
+
 See `whiffle --help` for more.

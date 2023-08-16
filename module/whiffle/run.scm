@@ -48,6 +48,7 @@
 (define* (run #:key input output-file assemble? (args '())
               preserve-builddir?
               (optimization-level 2) (warning-level 2)
+              (gc "semi")
               (fail (lambda (format-string . args)
                       (apply format (current-error-port) format-string args)
                       (exit 1))))
@@ -75,8 +76,9 @@
         (lambda (port)
           (format port "include ~a\n" build.mk)))
       (unless assemble?
-        (let ((status (system* "make" "--no-print-directory" "-C" dir
-                               "V=0" "out")))
+        (let ((status (system* "make" "--no-print-directory" "-C" dir "V=0"
+                               (string-append "GC_COLLECTOR=" gc)
+                               "out")))
           (unless (zero? (status:exit-val status))
             (fail (string-append
                    "error: failed to compile generated C; leaving temp dir ~a\n"
