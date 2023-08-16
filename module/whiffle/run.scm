@@ -89,7 +89,7 @@
           (lambda () (values)))
          (else
           (spawn-and-read-output
-           (cons (in-vicinity dir "out") args)
+           (cons (in-vicinity dir "out") (map object->string args))
            (lambda (output)
              (lambda ()
                (call-with-input-string output read-datum-then-eof)))

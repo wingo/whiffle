@@ -25,6 +25,19 @@ exec "${GUILE:-guile}" "$0" "$@"
              (ice-9 textual-ports)
              (whiffle run))
 
+(define (parse-args args)
+  (define (parse-arg arg)
+    (call-with-input-string
+     arg
+     (lambda (port)
+       (match (read port)
+         ((? eof-object?) (error "no expression in arg" arg))
+         (datum
+          (unless (eof-object? (read port))
+            (error "more than one expression in arg" arg))
+          datum)))))
+  (map parse-arg args))
+
 (define (main args)
   (define (usage port)
     (format port "usage: ~a [OPTION...] [INPUT-FILE] ARG...\n" (car args))
@@ -87,9 +100,10 @@ exec "${GUILE:-guile}" "$0" "$@"
         (error "unexpected warning level")))
   (define-values results
     (run #:input in-port #:output-file out-file #:assemble? assemble?
-         #:args args-to-scheme #:optimization-level optimization-level
-         #:preserve-builddir? preserve-builddir?
-         #:warning-level warning-level))
+         #:args (parse-args args-to-scheme)
+         #:optimization-level optimization-level
+         #:warning-level warning-level
+         #:preserve-builddir? preserve-builddir?))
   (for-each (lambda (datum) (write datum) (newline)) results)
   (exit 0))
 
