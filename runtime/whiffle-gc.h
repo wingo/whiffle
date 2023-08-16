@@ -20,6 +20,22 @@ gc_is_valid_conservative_ref_displacement(uintptr_t displacement) {
 #endif
 }
 
+static inline int gc_extern_space_visit(struct gc_extern_space *state,
+                                        struct gc_edge edge,
+                                        struct gc_ref ref) {
+  // Statically allocated objects can never reference objects from
+  // another space; it's mostly fine to consider them all to be
+  // precolored black.  Only problem is that pending ephemerons with REF
+  // as key will not be resolved as live.
+  return 0;
+}
+static inline void gc_extern_space_start_gc(struct gc_extern_space *space,
+                                            int is_minor_gc) {
+}
+static inline void gc_extern_space_finish_gc(struct gc_extern_space *space,
+                                            int is_minor_gc) {
+}
+
 static inline void trace_tagged_edge(void (*trace_edge)(struct gc_edge edge,
                                                         struct gc_heap *heap,
                                                         void *trace_data),

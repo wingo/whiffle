@@ -36,10 +36,15 @@ static VM vm_prepare_main_thread(Thread *thread, size_t initial_nargs) {
   }
   if (!gc_init(options, NULL, &thread->heap, &thread->mut))
     GC_CRASH();
+
   gc_mutator_set_roots(thread->mut, &thread->roots);
   Value *sp = thread->sp_base - initial_nargs;
   VM vm = (VM){thread, sp};
   thread->roots.safepoint = vm;
+
+  memset(&thread->extern_space, 0, sizeof(thread->extern_space));
+  gc_heap_set_extern_space(thread->heap, &thread->extern_space);
+
   return vm;
 }
 
@@ -85,7 +90,7 @@ static inline Code vm_closure_code(Value closure) {
   return c->code;
 }
 
-static inline Value vm_box(VM vm, Value a) {
+static inline Value vm_box(VM vm, Value *val_loc) {
   size_t bytes = sizeof(Box);
   Box *ret = gc_allocate_fast(vm.thread->mut, bytes);
   if (GC_UNLIKELY(!ret)) {
@@ -93,7 +98,7 @@ static inline Value vm_box(VM vm, Value a) {
     ret = gc_allocate_slow(vm.thread->mut, bytes);
   }
   tagged_set_payload(&ret->tag, BOX_TAG, 0);
-  ret->val = a;
+  ret->val = *val_loc;
   return value_from_heap_object(ret);
 }
 
@@ -139,15 +144,15 @@ static inline Value vm_rem(Value a, Value b) {
   return make_fixnum(fixnum_value(a) % fixnum_value(b));
 }
 
-static inline Value vm_cons(VM vm, Value a, Value b) {
+static inline Value vm_cons(VM vm, Value *car_loc, Value *cdr_loc) {
   size_t bytes = sizeof(Pair);
   Pair *ret = gc_allocate_fast(vm.thread->mut, bytes);
   if (GC_UNLIKELY(!ret)) {
     vm.thread->roots.safepoint = vm;
     ret = gc_allocate_slow(vm.thread->mut, bytes);
   }
-  tagged_set_value(&ret->tag, PAIR_TAG, a);
-  ret->cdr = b;
+  tagged_set_value(&ret->tag, PAIR_TAG, *car_loc);
+  ret->cdr = *cdr_loc;
   return value_from_heap_object(ret);
 }
 
@@ -179,7 +184,7 @@ static inline void vm_set_cdr(Value pair, Value val) {
   p->cdr = val;
 }
 
-static inline Value vm_make_vector(VM vm, Value size, Value init) {
+static inline Value vm_make_vector(VM vm, Value size, Value *init_loc) {
   if (!is_fixnum(size)) abort();
   intptr_t c_size = fixnum_value(size);
   if (c_size < 0 || c_size > (((uintptr_t)-1) >> 8)) abort();
@@ -193,6 +198,7 @@ static inline Value vm_make_vector(VM vm, Value size, Value init) {
 
   // Because one might allocate multiple closures then initialize them
   // all together in a <fix>, ensure the fields hold sensible values.
+  Value init = *init_loc;
   for (size_t i = 0; i < c_size; i++)
     ret->vals[i] = init;
 

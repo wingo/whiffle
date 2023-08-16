@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <pthread.h>
 
 struct Value { uintptr_t payload; };
 typedef struct Value Value;
@@ -57,16 +58,23 @@ struct gc_mutator_roots {
   VM safepoint;
 };
 
+struct gc_address_set;
+struct gc_extern_space {
+  pthread_mutex_t lock;
+  struct gc_address_set *marked;
+};
+
 typedef struct Thread {
   Value *sp_base;
   Value *sp_limit;
   struct gc_mutator *mut;
   struct gc_heap *heap;
   struct gc_mutator_roots roots;
+  struct gc_extern_space extern_space;
 } Thread;
 
 static inline int is_heap_object(Value v) {
-  return (v.payload & 3) == 0;
+  return (v.payload & 7) == 0;
 }
 
 static inline Value value_from_heap_object(void *obj) {
