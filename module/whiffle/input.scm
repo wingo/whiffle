@@ -18,8 +18,8 @@
 ;;; along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 (define-module (whiffle input)
+  #:use-module (whiffle paths)
   #:use-module (ice-9 match)
-  #:use-module (language tree-il)
   #:use-module (language tree-il primitives)
   #:export (read-and-expand))
 
@@ -37,15 +37,16 @@
      (resolve-primitives (macroexpand exp) mod))))
 
 (define (read* port)
-  (match (read port)
-    ((? eof-object?)
-     (error "file is empty" (port-filename port)))
-    (expr
-     `(begin ,expr
-             . ,(let lp ()
-                  (match (read port)
-                    ((? eof-object?) '())
-                    (expr (cons expr (lp)))))))))
+  (match (let lp ()
+             (match (read-syntax port)
+               ((? eof-object?) '())
+               (expr (cons expr (lp)))))
+    (() (error "file is empty" (port-filename port)))
+    (body
+     #`(let ()
+         (include #,(whiffle-stdlib.scm))
+         (let ()
+           . #,body)))))
 
 (define (read-and-expand port)
   (expand (read* port)))

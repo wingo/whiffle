@@ -22,6 +22,7 @@
   #:use-module (ice-9 match)
   #:export (whiffle-filename
             whiffle-build.mk
+            whiffle-stdlib.scm
             temp-filename))
 
 (define (resolve filename)
@@ -46,6 +47,9 @@
 
 (define (whiffle-build.mk)
   (whiffle-filename "build.mk"))
+
+(define (whiffle-stdlib.scm)
+  (whiffle-filename "runtime" "stdlib.scm"))
 
 (define (temp-filename filename)
   (in-vicinity tmpdir filename))

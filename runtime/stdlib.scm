@@ -1,0 +1,10 @@
+(define (map f l)
+  (if (null? l)
+      '()
+      (cons (f (car l)) (map f (cdr l)))))
+
+(define (iota n)
+  (let lp ((i 0))
+    (if (eq? i n)
+        '()
+        (cons i (lp (1+ i))))))
