@@ -76,9 +76,9 @@
 (define (emit-bind-label asm label)
   (<-code asm "L~a:\n" label))
 
-(define (constant-ref asm const)
-  (define (static-ref idx)
-    (format #f "STATIC_REF (C~a)" idx))
+(define (constant-code asm const)
+  (define (static-code idx)
+    (format #f "STATIC_CODE (C~a)" idx))
   (define (intern!)
     (let ((idx (asm-next-constant asm)))
       (hash-set! (asm-constants asm) const idx)
@@ -87,18 +87,18 @@
   (define (intern-new-constant)
     (match const
       ((a . b)
-       (let* ((car (constant-ref asm a))
-              (cdr (constant-ref asm b))
+       (let* ((car (constant-code asm a))
+              (cdr (constant-code asm b))
               (idx (intern!)))
          (<-decl asm
                  "static const Pair C~a = STATIC_PAIR (~a, ~a);\n"
                  idx car cdr)
          idx))
       (#(vals ...)
-       (let* ((vals (map (lambda (val) (constant-ref asm val)) vals))
+       (let* ((vals (map (lambda (val) (constant-code asm val)) vals))
               (idx (intern!)))
          (<-decl asm
-                 "static const Vector C~a = STATIC_VECTOR (~a~{, ~a~});\n"
+                 "static const Vector C~a = STATIC_VECTOR (~a~{, {~a}~});\n"
                  idx (length vals) vals)
          idx))
       (($ <static-closure> label)
@@ -106,13 +106,16 @@
          (<-decl asm "static Closure C~a;\n" idx)
          idx))))
   (match const
-    ((? integer?) (format #f "IMMEDIATE_INTEGER (~a)" const))
-    ((? unspecified?) "IMMEDIATE_UNSPECIFIED")
-    (#f "IMMEDIATE_FALSE")
-    (#t "IMMEDIATE_TRUE")
-    (() "IMMEDIATE_NULL")
-    (_ (static-ref (or (hash-ref (asm-constants asm) const)
-                       (intern-new-constant))))))
+    ((? integer?) (format #f "IMMEDIATE_INTEGER_CODE (~a)" const))
+    ((? unspecified?) "IMMEDIATE_UNSPECIFIED_CODE")
+    (#f "IMMEDIATE_FALSE_CODE")
+    (#t "IMMEDIATE_TRUE_CODE")
+    (() "IMMEDIATE_NULL_CODE")
+    (_ (static-code (or (hash-ref (asm-constants asm) const)
+                        (intern-new-constant))))))
+
+(define (constant-ref asm const)
+  (format #f "CONST (~a)" (constant-code asm const)))
 
 (define (emit-constant-ref asm dst const)
   (<-code asm "  vm.sp[~a] = ~a;\n" dst (constant-ref asm const)))
@@ -911,13 +914,6 @@ lambda-case clause @var{clause}."
             (let ((nargs (length syms)))
               (<-code asm "int main (int argc, char *argv[]) {\n")
               (<-code asm "  if (argc != ~a) abort();\n" (1+ nargs))
-              (hash-for-each (lambda (c idx)
-                               (match c
-                                 (($ <static-closure> label)
-                                  (<-code asm "  C~a = STATIC_CLOSURE(F~A);\n"
-                                          idx label))
-                                 (_ (values))))
-                             (asm-constants asm))
               (<-code asm "  Thread thread;\n")
               (<-code asm "  VM vm = vm_prepare_main_thread(&thread, ~a);\n" (1+ nargs))
               (emit-constant-ref asm nargs (make-static-closure label))

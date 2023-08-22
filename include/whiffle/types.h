@@ -43,16 +43,25 @@ typedef struct Closure { Tagged tag; Code code; Value free_vars[]; } Closure;
 
 #define REMEMBERED_TAG   ((uintptr_t)0x10)
 
-#define STATIC_REF(label) ((Value){(uintptr_t)&label})
-#define STATIC_PAIR(a, b) ((Pair){(Tagged){(Value){a.payload | PAIR_TAG}}, b})
-#define STATIC_VECTOR(len, ...) ((Vector){(Tagged){VECTOR_TAG|(len<<8)}, {__VA_ARGS__}})
-#define STATIC_CLOSURE(label) ((Closure){(Tagged){CLOSURE_TAG}, &label})
+#define STATIC_CODE(label) ((uintptr_t)&label)
 
-#define IMMEDIATE_INTEGER(i)  ((Value){(uintptr_t)((i << 2) | FIXNUM_VALUE_TAG)})
-#define IMMEDIATE_FALSE       ((Value){(uintptr_t)0x004})
-#define IMMEDIATE_TRUE        ((Value){(uintptr_t)0x404})
-#define IMMEDIATE_UNSPECIFIED ((Value){(uintptr_t)0x804})
-#define IMMEDIATE_NULL        ((Value){(uintptr_t)0xc04})
+#define STATIC_PAIR(a, b)       {{a | PAIR_TAG}, {b}}
+#define STATIC_VECTOR(len, ...) {{VECTOR_TAG|(len<<8)}, {__VA_ARGS__}}
+#define STATIC_CLOSURE(label)   {{CLOSURE_TAG}, &label}
+
+#define IMMEDIATE_INTEGER_CODE(i)  ((uintptr_t)((i << 2) | FIXNUM_VALUE_TAG))
+#define IMMEDIATE_FALSE_CODE       ((uintptr_t)0x004)
+#define IMMEDIATE_TRUE_CODE        ((uintptr_t)0x404)
+#define IMMEDIATE_UNSPECIFIED_CODE ((uintptr_t)0x804)
+#define IMMEDIATE_NULL_CODE        ((uintptr_t)0xc04)
+
+#define CONST(code) ((Value){code})
+
+#define IMMEDIATE_INTEGER(i)  CONST(IMMEDIATE_INTEGER_CODE(i))
+#define IMMEDIATE_FALSE       CONST(IMMEDIATE_FALSE_CODE)
+#define IMMEDIATE_TRUE        CONST(IMMEDIATE_TRUE_CODE)
+#define IMMEDIATE_UNSPECIFIED CONST(IMMEDIATE_UNSPECIFIED_CODE)
+#define IMMEDIATE_NULL        CONST(IMMEDIATE_NULL_CODE)
 
 struct gc_mutator_roots {
   VM safepoint;
