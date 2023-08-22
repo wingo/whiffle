@@ -257,6 +257,16 @@ static inline Value vm_string_to_vector(Value str) {
   return value_from_heap_object(s->chars);
 }
 
+static inline int is_symbol(Value x) {
+  return is_heap_object(x) && tagged_kind(value_to_heap_object(x)) == SYMBOL_TAG;
+}
+
+static inline Value vm_symbol_to_string(Value sym) {
+  if (!is_symbol(sym)) abort();
+  Symbol *s = value_to_heap_object(sym);
+  return value_from_heap_object(s->str);
+}
+
 static inline Value vm_char_to_integer(Value x) {
   return value_from_fixnum(value_to_char(x));
 }
@@ -265,6 +275,10 @@ static inline Value vm_integer_to_char(Value x) {
   intptr_t i = value_to_fixnum(x);
   if (i < 0 || i >= (1 << 21)) __builtin_trap();
   return value_from_fixnum(value_to_char(x));
+}
+
+static inline void vm_write_char(Value ch) {
+  fputc(value_to_char(ch), stdout);
 }
 
 static inline int vm_is_false(Value val) {
@@ -281,6 +295,10 @@ static inline int vm_is_vector(Value val) {
 
 static inline int vm_is_string(Value val) {
   return is_string(val);
+}
+
+static inline int vm_is_symbol(Value val) {
+  return is_symbol(val);
 }
 
 static inline int vm_is_char(Value val) {

@@ -21,6 +21,7 @@ typedef struct Pair { Tagged tag; Value cdr; } Pair;
 typedef struct Box { Tagged tag; Value val; } Box;
 typedef struct Vector { Tagged tag; Value vals[]; } Vector;
 typedef struct String { Tagged tag; Vector *chars; } String;
+typedef struct Symbol { Tagged tag; String *str; } Symbol;
 typedef struct Closure { Tagged tag; Code code; Value free_vars[]; } Closure;
 
 #define FIXNUM_MAX ((intptr_t)(((uintptr_t)-1)>>2))
@@ -42,6 +43,7 @@ typedef struct Closure { Tagged tag; Code code; Value free_vars[]; } Closure;
 #define VECTOR_TAG       ((uintptr_t)0x07) /* 0b0_0111 */
 #define CLOSURE_TAG      ((uintptr_t)0x0d) /* 0b0_1101 */
 #define STRING_TAG       ((uintptr_t)0x15) /* 0b1_0101 */
+#define SYMBOL_TAG       ((uintptr_t)0x17) /* 0b1_0111 */
 #define BUSY_TAG         ((uintptr_t)0x0f) /* 0b1_1111 */
 
 #define REMEMBERED_TAG   ((uintptr_t)0x10)
@@ -51,6 +53,7 @@ typedef struct Closure { Tagged tag; Code code; Value free_vars[]; } Closure;
 #define STATIC_PAIR(a, b)       {{a | PAIR_TAG}, {b}}
 #define STATIC_VECTOR(len, ...) {{VECTOR_TAG|(len<<8)}, {__VA_ARGS__}}
 #define STATIC_STRING(v)        {{STRING_TAG}, (Vector*)v}
+#define STATIC_SYMBOL(s)        {{SYMBOL_TAG}, (String*)s}
 #define STATIC_CLOSURE(label)   {{CLOSURE_TAG}, &label}
 
 #define IMMEDIATE_INTEGER_CODE(i)  ((uintptr_t)((i << 2) | FIXNUM_VALUE_TAG))

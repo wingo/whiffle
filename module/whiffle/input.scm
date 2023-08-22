@@ -24,7 +24,9 @@
   #:export (read-and-expand))
 
 (define (make-fresh-whiffle-module)
-  (make-fresh-user-module))
+  (let ((mod (make-fresh-user-module)))
+    (module-use! mod (resolve-interface '(whiffle primitives)))
+    mod))
 
 ;; How to allow the prelude to define primcalls?  Wrap in a (lambda
 ;; (primcall) ...), then instances of (primcall 'cons a b) translates to

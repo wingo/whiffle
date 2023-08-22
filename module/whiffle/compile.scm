@@ -108,9 +108,16 @@
                  "static const String C~a = STATIC_STRING (~a);\n"
                  idx v)
          idx))
+      ((? symbol?)
+       (let* ((v (constant-code asm (symbol->string const)))
+              (idx (intern!)))
+         (<-decl asm
+                 "static const Symbol C~a = STATIC_SYMBOL (~a);\n"
+                 idx v)
+         idx))
       (($ <static-closure> label)
        (let* ((idx (intern!)))
-         (<-decl asm "static Closure C~a;\n" idx)
+         (<-decl asm "static Closure C~a = STATIC_CLOSURE (F~a);\n" idx label)
          idx))))
   (match const
     ((? integer?) (format #f "IMMEDIATE_INTEGER_CODE (~a)" const))
@@ -214,10 +221,14 @@
   (<-code asm "  vm_vector_set(vm.sp[~a], vm.sp[~a], vm.sp[~a]);\n" v idx val))
 (define (emit-string->vector asm dst str)
   (<-code asm "  vm.sp[~a] = vm_string_to_vector(vm.sp[~a]);\n" dst str))
+(define (emit-symbol->string asm dst sym)
+  (<-code asm "  vm.sp[~a] = vm_symbol_to_string(vm.sp[~a]);\n" dst sym))
 (define (emit-char->integer asm dst ch)
   (<-code asm "  vm.sp[~a] = vm_char_to_integer(vm.sp[~a]);\n" dst ch))
 (define (emit-integer->char asm dst i)
   (<-code asm "  vm.sp[~a] = vm_integer_to_char(vm.sp[~a]);\n" dst i))
+(define (emit-write-char asm ch)
+  (<-code asm "  vm_write_char(vm.sp[~a]);\n" ch))
 (define (emit-jump asm target)
   (<-code asm "  goto L~a;\n" target))
 (define (emit-jump-if-not-false asm val target)
@@ -228,6 +239,8 @@
   (<-code asm "  if (!vm_is_vector(vm.sp[~a])) goto L~a;\n" val target))
 (define (emit-jump-if-not-string asm val target)
   (<-code asm "  if (!vm_is_string(vm.sp[~a])) goto L~a;\n" val target))
+(define (emit-jump-if-not-symbol asm val target)
+  (<-code asm "  if (!vm_is_symbol(vm.sp[~a])) goto L~a;\n" val target))
 (define (emit-jump-if-not-char asm val target)
   (<-code asm "  if (!vm_is_char(vm.sp[~a])) goto L~a;\n" val target))
 (define (emit-jump-if-not-eq asm a b target)
@@ -291,9 +304,13 @@
   (string?          #:nargs 1 #:predicate? #t  #:emit emit-jump-if-not-string)
   (string->vector   #:nargs 1 #:has-result? #t #:emit emit-string->vector)
 
+  (symbol?          #:nargs 1 #:predicate? #t  #:emit emit-jump-if-not-symbol)
+  (symbol->string   #:nargs 1 #:has-result? #t #:emit emit-symbol->string)
+
   (char?            #:nargs 1 #:predicate? #t  #:emit emit-jump-if-not-char)
   (char->integer    #:nargs 1 #:has-result? #t #:emit emit-char->integer)
   (integer->char    #:nargs 1 #:has-result? #t #:emit emit-integer->char)
+  (write-char       #:nargs 1 #:has-result? #f #:emit emit-write-char)
 
   (false?           #:nargs 1 #:predicate? #t  #:emit emit-jump-if-not-false)
   (eq?              #:nargs 2 #:predicate? #t  #:emit emit-jump-if-not-eq)
@@ -431,8 +448,8 @@
          (('not x)  (for-tail (make-conditional src
                                                 (make-primcall src 'false?
                                                                (list x))
-                                                (make-const src #f)
-                                                (make-const src #t))))
+                                                (make-const src #t)
+                                                (make-const src #f))))
 
          (('list . contents)
           (for-tail
@@ -472,22 +489,22 @@
                          (or (not (primitive-nargs prim))
                              (= (primitive-nargs prim) (length args))))
               (error "unsupported primcall" exp))
-            (define exp (make-primcall src name args))
-            (cond
-             ((primitive-predicate? prim)
-              (make-conditional src exp
-                                (for-tail (make-const src #t))
-                                (for-tail (make-const src #f))))
-             ((primitive-has-result? prim)
-              (match ctx
-                ('value exp)
-                ('effect (drop exp))
-                ('tail (return exp))))
-             (else
-              (match ctx
-                ('value (wrap exp))
-                ('effect exp)
-                ('tail (return (wrap exp))))))))))))
+            (let ((exp (make-primcall src name args)))
+              (cond
+               ((primitive-predicate? prim)
+                (make-conditional src exp
+                                  (for-tail (make-const src #t))
+                                  (for-tail (make-const src #f))))
+               ((primitive-has-result? prim)
+                (match ctx
+                  ('value exp)
+                  ('effect (drop exp))
+                  ('tail (return exp))))
+               (else
+                (match ctx
+                  ('value (wrap exp))
+                  ('effect exp)
+                  ('tail (return (wrap exp)))))))))))))
 
   (visit exp 'value))
 
@@ -771,13 +788,13 @@ lambda-case clause @var{clause}."
              (maybe-mov dst))))
 
         (($ <conditional> src test consequent alternate)
-         (let ((kt (make-label asm))
+         (let ((kf (make-label asm))
                (kcont (make-label asm)))
-           (for-test test kt env)
-           (for-value-at alternate env dst)
-           (emit-jump asm kcont)
-           (emit-bind-label asm kt)
+           (for-test test kf env)
            (for-value-at consequent env dst)
+           (emit-jump asm kcont)
+           (emit-bind-label asm kf)
+           (for-value-at alternate env dst)
            (emit-bind-label asm kcont)))
 
         (($ <seq> src head tail)
@@ -834,13 +851,13 @@ lambda-case clause @var{clause}."
          (values))
 
         (($ <conditional> src test consequent alternate)
-         (let ((kt (make-label asm))
+         (let ((kf (make-label asm))
                (kcont (make-label asm)))
-           (for-test test kt env)
-           (for-effect alternate env)
-           (emit-jump asm kcont)
-           (emit-bind-label asm kt)
+           (for-test test kf env)
            (for-effect consequent env)
+           (emit-jump asm kcont)
+           (emit-bind-label asm kf)
+           (for-effect alternate env)
            (emit-bind-label asm kcont))
          (values))
 
@@ -912,7 +929,12 @@ lambda-case clause @var{clause}."
   (call-with-values (lambda ()
                       (split-closures
                        (canonicalize
-                        (optimize-tree-il exp #f))))
+                        (optimize-tree-il
+                         (let ((src (tree-il-src exp)))
+                           (make-lambda
+                            src '()
+                            (make-lambda-case src '() #f #f #f '() '() exp #f)))
+                         #f))))
     (lambda (closures assigned)
       (call-with-assembler
        (lambda (asm)
@@ -932,22 +954,21 @@ lambda-case clause @var{clause}."
            ((($ <closure>
                 label
                 ($ <lambda> src meta
-                   ($ <lambda-case> src req #f #f #f () syms body #f))
+                   ($ <lambda-case> src () #f #f #f () () body #f))
                 free) . _)
             ;; Ensure main is interned as a static closure.
             (constant-ref asm (make-static-closure label))
-            (let ((nargs (length syms)))
-              (<-code asm "int main (int argc, char *argv[]) {\n")
-              (<-code asm "  if (argc != ~a) abort();\n" (1+ nargs))
-              (<-code asm "  Thread thread;\n")
-              (<-code asm "  VM vm = vm_prepare_main_thread(&thread, ~a);\n" (1+ nargs))
-              (emit-constant-ref asm nargs (make-static-closure label))
-              (for-each
-               (lambda (i)
-                 (<-code asm "  vm.sp[~a] = vm_parse_value(vm_trim(vm, ~a), argv[~a]);\n"
-                         (- nargs i 1) (- nargs i) (1+ i)))
-               (iota nargs))
-              (<-code asm "  vm = F~a(vm, ~a);\n" label (1+ nargs))
-              (<-code asm "  vm_print_value(vm.sp[0]);\n")
-              (<-code asm "  return 0;\n")
-              (<-code asm "};\n")))))))))
+            (<-code asm "int main (int argc, char *argv[]) {\n")
+            (<-code asm "  Thread thread;\n")
+            (<-code asm "  VM vm = vm_prepare_main_thread(&thread, argc);\n")
+            (emit-constant-ref asm "argc - 1" (make-static-closure label))
+            (<-code asm "  vm = F~a(vm_trim(vm, argc - 1), 1);\n" label)
+            (<-code asm "  if (argc > 1) {")
+            (<-code asm "    vm.sp -= argc - 1;")
+            (<-code asm "    for (int i = 1; i < argc; i++)\n")
+            (<-code asm "      vm.sp[argc-1-i] = vm_parse_value(vm_trim(vm, argc-i), argv[i]);\n")
+            (<-code asm "    vm = vm_closure_code(vm.sp[argc-1])(vm, argc);\n")
+            (<-code asm "  }\n")
+            (<-code asm "  vm_print_value(vm.sp[0]);\n")
+            (<-code asm "  return 0;\n")
+            (<-code asm "};\n"))))))))

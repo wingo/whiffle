@@ -14,26 +14,13 @@
 ;;; You should have received a copy of the GNU Lesser General Public License
 ;;; along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-(use-modules (whiffle run)
-             (ice-9 match))
+(define-module (whiffle primitives)
+  #:use-module ((language tree-il primitives)
+                #:select (add-interesting-primitive!))
+  #:export (string->vector))
 
-(define (check-equal expected actual)
-  (unless (equal? expected actual)
-    (error (format #f "expected ~s, got ~s" expected actual))))
+(define (string->vector str)
+  (list->vector (string->list str)))
 
-(define (check-expr expr)
-  (format #t "checking: ~s:" expr)
-  (force-output)
-  (check-equal (primitive-eval expr)
-               (run #:input (open-input-string
-                             (object->string `',expr))))
-  (format #t " ok.\n"))
-
-(define (check-exprs exprs)
-  (for-each check-expr exprs))
-
-(check-exprs
- '(42))
-
-(format #t "All tests passed.\n")
-(exit 0)
+(add-interesting-primitive! 'string->vector)
+(add-interesting-primitive! 'write-char)
