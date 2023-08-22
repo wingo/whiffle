@@ -20,6 +20,7 @@ typedef union Tagged {uintptr_t tag; Value inline_value;} Tagged;
 typedef struct Pair { Tagged tag; Value cdr; } Pair;
 typedef struct Box { Tagged tag; Value val; } Box;
 typedef struct Vector { Tagged tag; Value vals[]; } Vector;
+typedef struct String { Tagged tag; Vector *chars; } String;
 typedef struct Closure { Tagged tag; Code code; Value free_vars[]; } Closure;
 
 #define FIXNUM_MAX ((intptr_t)(((uintptr_t)-1)>>2))
@@ -29,17 +30,19 @@ typedef struct Closure { Tagged tag; Code code; Value free_vars[]; } Closure;
    would be better if the fixnum tag were zero, but that's not how Guile
    does it.  */
 #define FIXNUM_VALUE_TAG ((uintptr_t)2)    /* 0b0010 */
+#define CHAR_VALUE_TAG   ((uintptr_t)0xc)  /* 0b1100 */
 
-#define PAIR_MASK        ((uintptr_t)0x01) /* 0b0001 */
-#define PAIR_TAG         ((uintptr_t)0)    /* 0b0000 */
+#define PAIR_MASK        ((uintptr_t)0x01) /* 0b0_0001 */
+#define PAIR_TAG         ((uintptr_t)0)    /* 0b0_0000 */
 
-#define FORWARDED_MASK   ((uintptr_t)0x07) /* 0b0111 */
-#define FORWARDED_TAG    ((uintptr_t)0x03) /* 0b0011 */
+#define FORWARDED_MASK   ((uintptr_t)0x07) /* 0b0_0111 */
+#define FORWARDED_TAG    ((uintptr_t)0x03) /* 0b0_0011 */
 
-#define BOX_TAG          ((uintptr_t)0x05) /* 0b0101 */
-#define VECTOR_TAG       ((uintptr_t)0x07) /* 0b0111 */
-#define CLOSURE_TAG      ((uintptr_t)0x0d) /* 0b1101 */
-#define BUSY_TAG         ((uintptr_t)0x0f) /* 0b1111 */
+#define BOX_TAG          ((uintptr_t)0x05) /* 0b0_0101 */
+#define VECTOR_TAG       ((uintptr_t)0x07) /* 0b0_0111 */
+#define CLOSURE_TAG      ((uintptr_t)0x0d) /* 0b0_1101 */
+#define STRING_TAG       ((uintptr_t)0x15) /* 0b1_0101 */
+#define BUSY_TAG         ((uintptr_t)0x0f) /* 0b1_1111 */
 
 #define REMEMBERED_TAG   ((uintptr_t)0x10)
 
@@ -47,9 +50,11 @@ typedef struct Closure { Tagged tag; Code code; Value free_vars[]; } Closure;
 
 #define STATIC_PAIR(a, b)       {{a | PAIR_TAG}, {b}}
 #define STATIC_VECTOR(len, ...) {{VECTOR_TAG|(len<<8)}, {__VA_ARGS__}}
+#define STATIC_STRING(v)        {{STRING_TAG}, (Vector*)v}
 #define STATIC_CLOSURE(label)   {{CLOSURE_TAG}, &label}
 
 #define IMMEDIATE_INTEGER_CODE(i)  ((uintptr_t)((i << 2) | FIXNUM_VALUE_TAG))
+#define IMMEDIATE_CHAR_CODE(i)     ((uintptr_t)((((uintptr_t)i) << 4) | CHAR_VALUE_TAG))
 #define IMMEDIATE_FALSE_CODE       ((uintptr_t)0x004)
 #define IMMEDIATE_TRUE_CODE        ((uintptr_t)0x404)
 #define IMMEDIATE_UNSPECIFIED_CODE ((uintptr_t)0x804)
@@ -58,6 +63,7 @@ typedef struct Closure { Tagged tag; Code code; Value free_vars[]; } Closure;
 #define CONST(code) ((Value){code})
 
 #define IMMEDIATE_INTEGER(i)  CONST(IMMEDIATE_INTEGER_CODE(i))
+#define IMMEDIATE_CHAR(i)     CONST(IMMEDIATE_CHAR_CODE(i))
 #define IMMEDIATE_FALSE       CONST(IMMEDIATE_FALSE_CODE)
 #define IMMEDIATE_TRUE        CONST(IMMEDIATE_TRUE_CODE)
 #define IMMEDIATE_UNSPECIFIED CONST(IMMEDIATE_UNSPECIFIED_CODE)
@@ -99,17 +105,30 @@ static inline int is_fixnum(Value v) {
   return (v.payload & 3) == FIXNUM_VALUE_TAG;
 }
 
+static inline int is_char(Value v) {
+  return (v.payload & 0xf) == CHAR_VALUE_TAG;
+}
+
 static inline intptr_t value_to_fixnum(Value v) {
   if (!is_fixnum(v)) __builtin_trap();
   return ((intptr_t)v.payload) >> 2;
 }
 
+static inline uint32_t value_to_char(Value v) {
+  if (!is_char(v)) __builtin_trap();
+  return ((uint32_t)v.payload) >> 4;
+}
+
 static inline Value value_from_fixnum(intptr_t v) {
-  return (Value){(v << 2) | 2};
+  return IMMEDIATE_INTEGER(v);
+}
+
+static inline Value value_from_char(uint32_t v) {
+  return IMMEDIATE_CHAR(v);
 }
 
 static inline uint8_t tagged_kind(Tagged* tagged) {
-  return tagged->tag & 0x0f;
+  return tagged->tag & 0xff;
 }
 
 static inline uint8_t tagged_is_pair(Tagged* tagged) {

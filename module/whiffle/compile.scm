@@ -101,12 +101,20 @@
                  "static const Vector C~a = STATIC_VECTOR (~a~{, {~a}~});\n"
                  idx (length vals) vals)
          idx))
+      ((? string?)
+       (let* ((v (constant-code asm (list->vector (string->list const))))
+              (idx (intern!)))
+         (<-decl asm
+                 "static const String C~a = STATIC_STRING (~a);\n"
+                 idx v)
+         idx))
       (($ <static-closure> label)
        (let* ((idx (intern!)))
          (<-decl asm "static Closure C~a;\n" idx)
          idx))))
   (match const
     ((? integer?) (format #f "IMMEDIATE_INTEGER_CODE (~a)" const))
+    ((? char?) (format #f "IMMEDIATE_CHAR_CODE (~a)" (char->integer const)))
     ((? unspecified?) "IMMEDIATE_UNSPECIFIED_CODE")
     (#f "IMMEDIATE_FALSE_CODE")
     (#t "IMMEDIATE_TRUE_CODE")
@@ -204,6 +212,12 @@
   (<-code asm "  vm.sp[~a] = vm_vector_ref(vm.sp[~a], vm.sp[~a]);\n" dst v idx))
 (define (emit-vector-set asm v idx val)
   (<-code asm "  vm_vector_set(vm.sp[~a], vm.sp[~a], vm.sp[~a]);\n" v idx val))
+(define (emit-string->vector asm dst str)
+  (<-code asm "  vm.sp[~a] = vm_string_to_vector(vm.sp[~a]);\n" dst str))
+(define (emit-char->integer asm dst ch)
+  (<-code asm "  vm.sp[~a] = vm_char_to_integer(vm.sp[~a]);\n" dst ch))
+(define (emit-integer->char asm dst i)
+  (<-code asm "  vm.sp[~a] = vm_integer_to_char(vm.sp[~a]);\n" dst i))
 (define (emit-jump asm target)
   (<-code asm "  goto L~a;\n" target))
 (define (emit-jump-if-not-false asm val target)
@@ -212,6 +226,10 @@
   (<-code asm "  if (!vm_is_pair(vm.sp[~a])) goto L~a;\n" val target))
 (define (emit-jump-if-not-vector asm val target)
   (<-code asm "  if (!vm_is_vector(vm.sp[~a])) goto L~a;\n" val target))
+(define (emit-jump-if-not-string asm val target)
+  (<-code asm "  if (!vm_is_string(vm.sp[~a])) goto L~a;\n" val target))
+(define (emit-jump-if-not-char asm val target)
+  (<-code asm "  if (!vm_is_char(vm.sp[~a])) goto L~a;\n" val target))
 (define (emit-jump-if-not-eq asm a b target)
   (<-code asm "  if (!vm_is_eq(vm.sp[~a], vm.sp[~a])) goto L~a;\n" a b target))
 (define (emit-jump-if-not-< asm a b target)
@@ -270,6 +288,13 @@
   (vector-ref       #:nargs 2 #:has-result? #t #:emit emit-vector-ref)
   (vector-set!      #:nargs 3                  #:emit emit-vector-set)
   
+  (string?          #:nargs 1 #:predicate? #t  #:emit emit-jump-if-not-string)
+  (string->vector   #:nargs 1 #:has-result? #t #:emit emit-string->vector)
+
+  (char?            #:nargs 1 #:predicate? #t  #:emit emit-jump-if-not-char)
+  (char->integer    #:nargs 1 #:has-result? #t #:emit emit-char->integer)
+  (integer->char    #:nargs 1 #:has-result? #t #:emit emit-integer->char)
+
   (false?           #:nargs 1 #:predicate? #t  #:emit emit-jump-if-not-false)
   (eq?              #:nargs 2 #:predicate? #t  #:emit emit-jump-if-not-eq)
   (<                #:nargs 2 #:predicate? #t  #:emit emit-jump-if-not-<)

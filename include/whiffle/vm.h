@@ -247,6 +247,26 @@ static inline void vm_vector_set(Value vector, Value idx, Value val) {
   v->vals[c_idx] = val;
 }
 
+static inline int is_string(Value x) {
+  return is_heap_object(x) && tagged_kind(value_to_heap_object(x)) == STRING_TAG;
+}
+
+static inline Value vm_string_to_vector(Value str) {
+  if (!is_string(str)) abort();
+  String *s = value_to_heap_object(str);
+  return value_from_heap_object(s->chars);
+}
+
+static inline Value vm_char_to_integer(Value x) {
+  return value_from_fixnum(value_to_char(x));
+}
+
+static inline Value vm_integer_to_char(Value x) {
+  intptr_t i = value_to_fixnum(x);
+  if (i < 0 || i >= (1 << 21)) __builtin_trap();
+  return value_from_fixnum(value_to_char(x));
+}
+
 static inline int vm_is_false(Value val) {
   return val.payload == IMMEDIATE_FALSE.payload;
 }
@@ -257,6 +277,14 @@ static inline int vm_is_pair(Value val) {
 
 static inline int vm_is_vector(Value val) {
   return is_vector(val);
+}
+
+static inline int vm_is_string(Value val) {
+  return is_string(val);
+}
+
+static inline int vm_is_char(Value val) {
+  return is_char(val);
 }
 
 static inline int vm_is_eq(Value a, Value b) {
@@ -300,6 +328,14 @@ static inline void vm_print_value(Value val) {
   if (is_fixnum(val)) {
     intptr_t ival = fixnum_value(val);
     fprintf(stdout, "%lld\n", (long long)ival);
+  } else if (is_string(val)) {
+    String *s = value_to_heap_object(val);
+    Vector *v = s->chars;
+    fputc('"', stdout);
+    for (size_t i = 0; i < tagged_payload(&v->tag); i++)
+      fputc(value_to_char(v->vals[i]), stdout);
+    fputc('"', stdout);
+    fputc('\n', stdout);
   } else {
     abort();
   }
