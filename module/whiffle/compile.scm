@@ -443,13 +443,10 @@
          (('>  a b) (for-tail (make-primcall src '<  (list b a))))
          ;; As long as we have no NaN, we can turn <= into <.
          (('<= a b) (for-tail
-                     (make-primcall src 'not
-                                    (list (make-primcall src '< (list b a))))))
-         (('not x)  (for-tail (make-conditional src
-                                                (make-primcall src 'false?
-                                                               (list x))
-                                                (make-const src #t)
-                                                (make-const src #f))))
+                     (make-conditional src
+                                       (make-primcall src '< (list b a))
+                                       (make-const src #f)
+                                       (make-const src #t))))
 
          (('list . contents)
           (for-tail

@@ -23,14 +23,18 @@
   #:use-module (language tree-il primitives)
   #:export (read-and-expand))
 
+(save-module-excursion
+ (lambda ()
+   (set-current-module (resolve-module '(whiffle primitives)))
+   (add-interesting-primitive! 'call-c-primitive)
+   (add-interesting-primitive! 'call-c-primitive/result)))
+
 (define (make-fresh-whiffle-module)
   (let ((mod (make-fresh-user-module)))
+    (purify-module! mod)
     (module-use! mod (resolve-interface '(whiffle primitives)))
     mod))
 
-;; How to allow the prelude to define primcalls?  Wrap in a (lambda
-;; (primcall) ...), then instances of (primcall 'cons a b) translates to
-;; an actual primcall.  Eventually.
 (define (expand exp)
   (save-module-excursion
    (lambda ()
