@@ -81,7 +81,7 @@
         (cond
          (output-file
           (rename-file (in-vicinity dir "out") output-file)
-          (lambda () (values)))
+          (lambda () ""))
          (else
           (spawn-and-read-output
            (cons (in-vicinity dir "out") (map object->string args))
