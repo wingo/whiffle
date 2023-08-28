@@ -26,9 +26,6 @@
                                         fold-right
                                         lset-adjoin lset-union lset-difference))
   #:use-module (srfi srfi-9)
-  #:use-module (rnrs bytevectors)
-  #:use-module (rnrs bytevectors gnu)
-  #:use-module (ice-9 textual-ports)
   #:export (compile-to-c))
 
 (define-record-type <static-closure>
@@ -66,8 +63,6 @@
   (unless (zero? slots)
     (<-code asm "  if (vm.sp - vm.thread->sp_limit < ~a) abort();\n" slots)
     (<-code asm "  vm.sp -= ~a;\n" slots)))
-(define (emit-contract-sp asm slots)
-  (<-code asm "  vm.sp += ~a;\n" slots))
 
 (define (make-label asm)
   (let ((label (asm-next-label asm)))
@@ -227,12 +222,20 @@
   (<-code asm "  vm.sp[~a] = vm_char_to_integer(vm.sp[~a]);\n" dst ch))
 (define (emit-integer->char asm dst i)
   (<-code asm "  vm.sp[~a] = vm_integer_to_char(vm.sp[~a]);\n" dst i))
-(define (emit-write-char asm ch)
-  (<-code asm "  vm_write_char(vm.sp[~a]);\n" ch))
+(define (emit-c-primcall/result asm prim dst args)
+  (<-code asm "  vm.sp[~a] = ~a(~a);\n" dst prim
+          (string-join (map (lambda (arg) (format #f "vm.sp[~a]" arg)) args)
+                       ", ")))
+(define (emit-c-primcall asm prim args)
+  (<-code asm "  ~a(~a);\n" prim
+          (string-join (map (lambda (arg) (format #f "vm.sp[~a]" arg)) args)
+                       ", ")))
 (define (emit-jump asm target)
   (<-code asm "  goto L~a;\n" target))
 (define (emit-jump-if-not-false asm val target)
   (<-code asm "  if (!vm_is_false(vm.sp[~a])) goto L~a;\n" val target))
+(define (emit-jump-if-not-fixnum asm val target)
+  (<-code asm "  if (!vm_is_fixnum(vm.sp[~a])) goto L~a;\n" val target))
 (define (emit-jump-if-not-pair asm val target)
   (<-code asm "  if (!vm_is_pair(vm.sp[~a])) goto L~a;\n" val target))
 (define (emit-jump-if-not-vector asm val target)
@@ -278,6 +281,7 @@
   (begin (define-primitive primitive kw ...) ...))
 
 (define-primitives
+  (exact-integer?   #:nargs 1 #:predicate? #t  #:emit emit-jump-if-not-fixnum)
   (+                #:nargs 2 #:has-result? #t #:emit emit-add)
   (-                #:nargs 2 #:has-result? #t #:emit emit-sub)
   (*                #:nargs 2 #:has-result? #t #:emit emit-mul)
@@ -310,7 +314,6 @@
   (char?            #:nargs 1 #:predicate? #t  #:emit emit-jump-if-not-char)
   (char->integer    #:nargs 1 #:has-result? #t #:emit emit-char->integer)
   (integer->char    #:nargs 1 #:has-result? #t #:emit emit-integer->char)
-  (write-char       #:nargs 1 #:has-result? #f #:emit emit-write-char)
 
   (false?           #:nargs 1 #:predicate? #t  #:emit emit-jump-if-not-false)
   (eq?              #:nargs 2 #:predicate? #t  #:emit emit-jump-if-not-eq)
@@ -318,7 +321,7 @@
   (=                #:nargs 2 #:predicate? #t  #:emit emit-jump-if-not-=)
 
   ;; The primitives below aren't recognized from source code; instead
-  ;; they are introduced by the canonicalizer.a
+  ;; they are introduced by the canonicalizer.
   (return           #:nargs 1                  #:emit emit-return))
 
 (define (evaluate-args-eagerly src inits k)
@@ -477,6 +480,22 @@
                    v
                    (map cons (iota len) args))))))))
 
+         (((or 'call-c-primitive 'call-c-primitive/result)
+           ($ <const> _ (? string? c-prim))
+           . args)
+          (let ((exp (make-primcall src `(,name ,c-prim) (map for-value args))))
+            (match name
+              ('call-c-primitive/result
+               (match ctx
+                 ('value exp)
+                 ('effect (drop exp))
+                 ('tail (return exp))))
+              ('call-c-primitive
+               (match ctx
+                 ('value (wrap exp))
+                 ('effect exp)
+                 ('tail (return (wrap exp))))))))
+
          ;; Now that we handled special cases, ensure remaining primcalls
          ;; are understood by the code generator, and if not, error.
          (_
@@ -611,6 +630,11 @@ lambda-case clause @var{clause}."
 
       (($ <primcall> src 'drop (x))
        (visit x))
+
+      (($ <primcall> src ('call-c-primitive c-prim) args)
+       (visit-args args))
+      (($ <primcall> src ('call-c-primitive/result c-prim) args)
+       (max 1 (visit-args args)))
 
       (($ <primcall> src name args)
        (let* ((prim (lookup-primitive name))
@@ -765,6 +789,13 @@ lambda-case clause @var{clause}."
            (emit-restore-sp asm dst)
            (maybe-mov dst)))
 
+        (($ <primcall> src ('call-c-primitive/result c-prim) args)
+         (let* ((env (push-args args env))
+                (arg-offsets (reverse
+                              (iota (length args) (env-sp-offset env)))))
+           (emit-c-primcall/result asm c-prim dst arg-offsets)
+           (maybe-mov dst)))
+
         (($ <primcall> src name args)
          (let ((prim (lookup-primitive name)))
            (unless (primitive-has-result? prim)
@@ -830,6 +861,13 @@ lambda-case clause @var{clause}."
         (($ <primcall> src 'drop (arg))
          (for-push arg env)
          (values))
+
+        (($ <primcall> src ('call-c-primitive c-prim) args)
+         (let* ((env (push-args args env))
+                (arg-offsets (reverse
+                              (iota (length args) (env-sp-offset env)))))
+           (emit-c-primcall asm c-prim arg-offsets)
+           (values)))
 
         (($ <primcall> src name args)
          (let ((prim (lookup-primitive name)))
@@ -966,6 +1004,5 @@ lambda-case clause @var{clause}."
             (<-code asm "      vm.sp[argc-1-i] = vm_parse_value(vm_trim(vm, argc-i), argv[i]);\n")
             (<-code asm "    vm = vm_closure_code(vm.sp[argc-1])(vm, argc);\n")
             (<-code asm "  }\n")
-            (<-code asm "  vm_print_value(vm.sp[0]);\n")
             (<-code asm "  return 0;\n")
             (<-code asm "};\n"))))))))

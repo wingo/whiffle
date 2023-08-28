@@ -36,16 +36,7 @@
          ((_ . status)
           (failure str status)))))))
 
-(define (read-datum-then-eof port)
-  (let ((datum (read port)))
-    (when (eof-object? datum)
-      (error "unexpected EOF"))
-    (let ((eof (read port)))
-      (unless (eof-object? eof)
-        (error "expected EOF" eof)))
-    datum))
-
-(define* (run #:key input output-file assemble? (args '())
+(define* (run #:key input expr output-file assemble? (args '())
               preserve-builddir?
               (optimization-level 2) (warning-level 2)
               (gc "semi")
@@ -55,7 +46,9 @@
   (when (and (or output-file assemble?) (pair? args))
     (fail "unexpected args while only compiling or assembling"))
   (define c-code
-    (compile-to-c (read-and-expand input)
+    (compile-to-c (if expr
+                      (expand expr)
+                      (read-and-expand input))
                   #:optimization-level optimization-level
                   #:warning-level warning-level))
 
@@ -92,9 +85,7 @@
          (else
           (spawn-and-read-output
            (cons (in-vicinity dir "out") (map object->string args))
-           (lambda (output)
-             (lambda ()
-               (call-with-input-string output read-datum-then-eof)))
+           (lambda (output) (lambda () output))
            (lambda (output status)
              (put-string (current-output-port) output)
              (cond

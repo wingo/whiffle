@@ -21,12 +21,23 @@
   (unless (equal? expected actual)
     (error (format #f "expected ~s, got ~s" expected actual))))
 
+(define (read-values port)
+  (let ((datum (read port)))
+    (if (eof-object? datum)
+        '()
+        (cons datum
+              (read-values port)))))
+
+(define (parse-output str)
+  (call-with-input-string str read-values))
+
 (define (check-expr expr)
   (format #t "checking: ~s:" expr)
   (force-output)
-  (check-equal (primitive-eval expr)
-               (run #:input (open-input-string
-                             (object->string `',expr))))
+  (check-equal (call-with-values (lambda () (primitive-eval expr))
+                 list)
+               (parse-output
+                (run #:expr `(write ',expr))))
   (format #t " ok.\n"))
 
 (define (check-exprs exprs)

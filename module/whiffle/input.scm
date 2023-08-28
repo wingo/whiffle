@@ -21,7 +21,7 @@
   #:use-module (whiffle paths)
   #:use-module (ice-9 match)
   #:use-module (language tree-il primitives)
-  #:export (read-and-expand))
+  #:export (expand read-and-expand))
 
 (save-module-excursion
  (lambda ()
@@ -36,11 +36,15 @@
     mod))
 
 (define (expand exp)
-  (save-module-excursion
-   (lambda ()
-     (define mod (make-fresh-whiffle-module))
-     (set-current-module mod)
-     (resolve-primitives (macroexpand exp) mod))))
+  (let ((exp #`(let ()
+                 (include #,(whiffle-stdlib.scm))
+                 (let ()
+                   #,exp))))
+    (save-module-excursion
+     (lambda ()
+       (define mod (make-fresh-whiffle-module))
+       (set-current-module mod)
+       (resolve-primitives (macroexpand exp) mod)))))
 
 (define (read* port)
   (match (let lp ()
@@ -49,10 +53,7 @@
                (expr (cons expr (lp)))))
     (() (error "file is empty" (port-filename port)))
     (body
-     #`(let ()
-         (include #,(whiffle-stdlib.scm))
-         (let ()
-           . #,body)))))
+     #`(begin . #,body))))
 
 (define (read-and-expand port)
   (expand (read* port)))

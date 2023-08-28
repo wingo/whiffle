@@ -285,6 +285,10 @@ static inline int vm_is_false(Value val) {
   return val.payload == IMMEDIATE_FALSE.payload;
 }
 
+static inline int vm_is_fixnum(Value val) {
+  return is_fixnum(val);
+}
+
 static inline int vm_is_pair(Value val) {
   return is_pair(val);
 }

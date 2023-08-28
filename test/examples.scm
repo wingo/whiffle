@@ -28,13 +28,26 @@
      (set-current-module (make-fresh-user-module))
      (primitive-load filename))))
 
+(define (read-values port)
+  (let ((datum (read port)))
+    (if (eof-object? datum)
+        '()
+        (cons datum
+              (read-values port)))))
+
+(define (parse-output str)
+  (call-with-input-string str read-values))
+
 (define (check-run example . args)
   (format #t "checking: ~s~{ ~s~}:" example args)
   (force-output)
   (let ((filename (whiffle-filename "examples" example)))
-    (check-equal (apply (load-in-fresh-module filename) args)
-                 (run #:input (open-input-file filename)
-                      #:args args)))
+    (check-equal (parse-output
+                  (with-output-to-string
+                    (lambda () (apply (load-in-fresh-module filename) args))))
+                 (parse-output
+                  (run #:input (open-input-file filename)
+                       #:args args))))
   (format #t " ok.\n"))
 
 (check-run "peano-fib.scm" 25)

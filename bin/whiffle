@@ -122,14 +122,14 @@ exec "${GUILE:-guile}" "$0" "$@"
     (format #t "  heap-conservative-parallel-generational-whippet\n")
     (format #t "                         combinations of the above\n")
     (exit 0))
-  (define-values results
+  (define result-str
     (run #:input in-port #:output-file out-file #:assemble? assemble?
          #:args (parse-args args-to-scheme)
          #:optimization-level optimization-level
          #:warning-level warning-level
          #:gc gc
          #:preserve-builddir? preserve-builddir?))
-  (for-each (lambda (datum) (write datum) (newline)) results)
+  (display result-str)
   (exit 0))
 
 (when (batch-mode?)

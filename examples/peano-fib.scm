@@ -31,4 +31,4 @@
           (1+ zero)
           (+ (fib (1- n)) (fib (1- (1- n))))))
 
-    (peano-value (fib (make-peano n)))))
+    (write (peano-value (fib (make-peano n))))))

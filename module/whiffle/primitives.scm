@@ -54,6 +54,7 @@
                  set-car!
                  set-cdr!
 
+                 exact-integer?
                  +
                  -
                  *
@@ -115,6 +116,7 @@
    (set-car! . %set-car!)
    (set-cdr! . %set-cdr!)
 
+   (exact-integer? . %exact-integer?)
    (* . %*)
    (+ . %+)
    (- . %-)
