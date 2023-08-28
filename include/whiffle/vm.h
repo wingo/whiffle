@@ -274,7 +274,7 @@ static inline Value vm_char_to_integer(Value x) {
 static inline Value vm_integer_to_char(Value x) {
   intptr_t i = value_to_fixnum(x);
   if (i < 0 || i >= (1 << 21)) __builtin_trap();
-  return value_from_fixnum(value_to_char(x));
+  return value_from_char(i);
 }
 
 static inline void vm_write_char(Value ch) {
