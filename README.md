@@ -36,18 +36,23 @@ So one example is to compile a function to C, then run the compiled
 file:
 
 ```
-$ ./pre-inst-env whiffle -e '(lambda () 42)'
-42
+$ ./pre-inst-env whiffle -e '42'
 ```
 
 The `pre-inst-env` is for running Whiffle from within the source tree,
 which is the only supported way to run it, currently.
 
+But if you ran that, OK, actually we should print the result:
+
+```
+$ ./pre-inst-env whiffle -e '(writeln 42)'
+```
+
 You may prefer instead to generate a binary instead of running it
 directly:
 
 ```
-$ ./pre-inst-env whiffle -o foo -e '(lambda () 42)'
+$ ./pre-inst-env whiffle -o foo -e '(write 42)'
 $ ./foo
 42
 ```
