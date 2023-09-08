@@ -222,14 +222,17 @@
   (<-code asm "  vm.sp[~a] = vm_char_to_integer(vm.sp[~a]);\n" dst ch))
 (define (emit-integer->char asm dst i)
   (<-code asm "  vm.sp[~a] = vm_integer_to_char(vm.sp[~a]);\n" dst i))
-(define (emit-c-primcall/result asm prim dst args)
-  (<-code asm "  vm.sp[~a] = ~a(~a);\n" dst prim
-          (string-join (map (lambda (arg) (format #f "vm.sp[~a]" arg)) args)
-                       ", ")))
 (define (emit-c-primcall asm prim args)
   (<-code asm "  ~a(~a);\n" prim
           (string-join (map (lambda (arg) (format #f "vm.sp[~a]" arg)) args)
                        ", ")))
+(define (emit-c-primcall/result asm prim dst args)
+  (<-code asm "  vm.sp[~a] = ~a(~a);\n" dst prim
+          (string-join (map (lambda (arg) (format #f "vm.sp[~a]" arg)) args)
+                       ", ")))
+(define (emit-c-primcall/alloc asm prim dst args junk-slots)
+  (<-code asm "  vm.sp[~a] = ~a(vm_trim(vm, ~a)~{, &vm.sp[~a]~});\n" dst prim
+          junk-slots args))
 (define (emit-jump asm target)
   (<-code asm "  goto L~a;\n" target))
 (define (emit-jump-if-not-false asm val target)
@@ -480,12 +483,14 @@
                    v
                    (map cons (iota len) args))))))))
 
-         (((or 'call-c-primitive 'call-c-primitive/result)
+         (((or 'call-c-primitive
+               'call-c-primitive/result
+               'call-c-primitive/alloc)
            ($ <const> _ (? string? c-prim))
            . args)
           (let ((exp (make-primcall src `(,name ,c-prim) (map for-value args))))
             (match name
-              ('call-c-primitive/result
+              ((or 'call-c-primitive/result 'call-c-primitive/alloc)
                (match ctx
                  ('value exp)
                  ('effect (drop exp))
@@ -633,7 +638,8 @@ lambda-case clause @var{clause}."
 
       (($ <primcall> src ('call-c-primitive c-prim) args)
        (visit-args args))
-      (($ <primcall> src ('call-c-primitive/result c-prim) args)
+      (($ <primcall> src ((or 'call-c-primitive/result
+                              'call-c-primitive/alloc) c-prim) args)
        (max 1 (visit-args args)))
 
       (($ <primcall> src name args)
@@ -794,6 +800,15 @@ lambda-case clause @var{clause}."
                 (arg-offsets (reverse
                               (iota (length args) (env-sp-offset env)))))
            (emit-c-primcall/result asm c-prim dst arg-offsets)
+           (maybe-mov dst)))
+
+        (($ <primcall> src ('call-c-primitive/alloc c-prim) args)
+         (let* ((env (push-args args env))
+                (args-offset (env-sp-offset env))
+                (arg-offsets (reverse
+                              (iota (length args) (env-sp-offset env)))))
+           (emit-c-primcall/alloc asm c-prim dst arg-offsets
+                                  args-offset)
            (maybe-mov dst)))
 
         (($ <primcall> src name args)

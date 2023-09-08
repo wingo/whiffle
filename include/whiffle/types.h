@@ -23,6 +23,8 @@ typedef struct Vector { Tagged tag; Value vals[]; } Vector;
 typedef struct String { Tagged tag; Vector *chars; } String;
 typedef struct Symbol { Tagged tag; String *str; } Symbol;
 typedef struct Closure { Tagged tag; Code code; Value free_vars[]; } Closure;
+// FIXME: a finalizer on ThreadHandle would allow cleanup of the Thread.
+typedef struct ThreadHandle { Tagged tag; Thread *thread; } ThreadHandle;
 
 #define FIXNUM_MAX ((intptr_t)(((uintptr_t)-1)>>2))
 #define FIXNUM_MIN (-FIXNUM_MAX-1)
@@ -33,20 +35,21 @@ typedef struct Closure { Tagged tag; Code code; Value free_vars[]; } Closure;
 #define FIXNUM_VALUE_TAG ((uintptr_t)2)    /* 0b0010 */
 #define CHAR_VALUE_TAG   ((uintptr_t)0xc)  /* 0b1100 */
 
-#define PAIR_MASK        ((uintptr_t)0x01) /* 0b0_0001 */
-#define PAIR_TAG         ((uintptr_t)0)    /* 0b0_0000 */
+#define PAIR_MASK        ((uintptr_t)0x01) /* 0b0000_0001 */
+#define PAIR_TAG         ((uintptr_t)0)    /* 0b0000_0000 */
 
-#define FORWARDED_MASK   ((uintptr_t)0x07) /* 0b0_0111 */
-#define FORWARDED_TAG    ((uintptr_t)0x03) /* 0b0_0011 */
+#define FORWARDED_MASK   ((uintptr_t)0x07) /* 0b0000_0111 */
+#define FORWARDED_TAG    ((uintptr_t)0x03) /* 0b0000_0011 */
 
-#define BOX_TAG          ((uintptr_t)0x05) /* 0b0_0101 */
-#define VECTOR_TAG       ((uintptr_t)0x07) /* 0b0_0111 */
-#define CLOSURE_TAG      ((uintptr_t)0x0d) /* 0b0_1101 */
-#define STRING_TAG       ((uintptr_t)0x15) /* 0b1_0101 */
-#define SYMBOL_TAG       ((uintptr_t)0x17) /* 0b1_0111 */
-#define BUSY_TAG         ((uintptr_t)0x0f) /* 0b1_1111 */
+#define BOX_TAG          ((uintptr_t)0x05) /* 0b0000_0101 */
+#define VECTOR_TAG       ((uintptr_t)0x07) /* 0b0000_0111 */
+#define CLOSURE_TAG      ((uintptr_t)0x0d) /* 0b0000_1101 */
+#define STRING_TAG       ((uintptr_t)0x15) /* 0b0001_0101 */
+#define SYMBOL_TAG       ((uintptr_t)0x17) /* 0b0001_0111 */
+#define THREAD_TAG       ((uintptr_t)0x1d) /* 0b0001_1101 */
+#define BUSY_TAG         ((uintptr_t)-1)   /* all 1's */
 
-#define REMEMBERED_TAG   ((uintptr_t)0x10)
+#define REMEMBERED_FLAG  ((uintptr_t)0x80) /* 0b1000_0000 */
 
 #define STATIC_CODE(label) ((uintptr_t)&label)
 
@@ -82,6 +85,15 @@ struct gc_extern_space {
   struct gc_address_set *marked;
 };
 
+enum thread_state {
+  THREAD_SPAWNING,
+  THREAD_WAITING,
+  THREAD_RUNNING,
+  THREAD_STOPPING,
+  THREAD_STOPPED,
+  THREAD_ERROR
+};
+
 typedef struct Thread {
   Value *sp_base;
   Value *sp_limit;
@@ -89,6 +101,10 @@ typedef struct Thread {
   struct gc_heap *heap;
   struct gc_mutator_roots roots;
   struct gc_extern_space extern_space;
+  pthread_t tid;
+  pthread_mutex_t lock;
+  pthread_cond_t cond;
+  enum thread_state state;
 } Thread;
 
 static inline int is_heap_object(Value v) {
@@ -139,15 +155,15 @@ static inline uint8_t tagged_is_pair(Tagged* tagged) {
 }
 
 static inline int tagged_remembered(Tagged* tagged) {
-  return tagged->tag & REMEMBERED_TAG;
+  return tagged->tag & REMEMBERED_FLAG;
 }
 
 static inline void tagged_set_remembered(Tagged* tagged) {
-  tagged->tag |= REMEMBERED_TAG;
+  tagged->tag |= REMEMBERED_FLAG;
 }
 
 static inline void tagged_clear_remembered(Tagged* tagged) {
-  tagged->tag &= ~(uintptr_t)REMEMBERED_TAG;
+  tagged->tag &= ~(uintptr_t)REMEMBERED_FLAG;
 }
 
 static inline int tag_is_forwarded(uintptr_t tag) {

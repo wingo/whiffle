@@ -92,16 +92,6 @@ static inline void gc_trace_object(struct gc_ref ref,
       return;
     }
 
-    case STRING_TAG: {
-      String *str = gc_ref_heap_object(ref);
-      if (trace_edge) {
-        trace_edge(gc_edge(&str->chars), heap, trace_data);
-      }
-      if (size)
-        *size = sizeof(*str);
-      return;
-    }
-
     case CLOSURE_TAG: {
       Closure *c = gc_ref_heap_object(ref);
       size_t nfree = tagged_payload(&c->tag);
@@ -112,6 +102,33 @@ static inline void gc_trace_object(struct gc_ref ref,
       }
       if (size)
         *size = sizeof(*c) + sizeof(Value) * nfree;
+      return;
+    }
+
+    case STRING_TAG: {
+      String *str = gc_ref_heap_object(ref);
+      if (trace_edge) {
+        trace_edge(gc_edge(&str->chars), heap, trace_data);
+      }
+      if (size)
+        *size = sizeof(*str);
+      return;
+    }
+
+    case SYMBOL_TAG: {
+      Symbol *sym = gc_ref_heap_object(ref);
+      if (trace_edge) {
+        trace_edge(gc_edge(&sym->str), heap, trace_data);
+      }
+      if (size)
+        *size = sizeof(*sym);
+      return;
+    }
+
+    case THREAD_TAG: {
+      ThreadHandle *thr = gc_ref_heap_object(ref);
+      if (size)
+        *size = sizeof(*thr);
       return;
     }
 

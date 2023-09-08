@@ -151,3 +151,12 @@
 
 (define (writeln x)   (write x)   (newline))
 (define (displayln x) (display x) (newline))
+
+(define (spawn-thread thunk)
+  ;; make thread object, with space for join val
+  ;; spawn thread with tid
+  ;; set tid in thread object
+  (call-c-primitive/alloc "vm_spawn_thread" thunk))
+
+(define (join-thread thread)
+  (call-c-primitive/alloc "vm_join_thread" thread))

@@ -363,4 +363,151 @@ static inline void vm_print_value(Value val) {
   }
 }
 
+static inline int is_thread(Value x) {
+  return is_heap_object(x) && tagged_kind(value_to_heap_object(x)) == THREAD_TAG;
+}
+
+static void* vm_thread_transition_to_running(void *data) {
+  Thread *thread = data;
+  pthread_mutex_lock(&thread->lock);
+  thread->state = THREAD_WAITING;
+  pthread_cond_signal(&thread->cond);
+  do
+    pthread_cond_wait(&thread->cond, &thread->lock);
+  while (thread->state == THREAD_WAITING);
+  if (thread->state != THREAD_RUNNING) abort();
+  pthread_mutex_unlock(&thread->lock);
+  return NULL;
+}
+
+static void* vm_thread_wait_for_stopping(void *data) {
+  Thread *thread = data;
+  pthread_mutex_lock(&thread->lock);
+  while (thread->state < THREAD_STOPPING)
+    pthread_cond_wait(&thread->cond, &thread->lock);
+  if (thread->state != THREAD_STOPPING) abort();
+  // Keep lock.
+  return NULL;
+}
+
+static void* vm_thread_transition_to_stopped(void *data) {
+  Thread *thread = data;
+  pthread_mutex_lock(&thread->lock);
+  thread->state = THREAD_STOPPING;
+  pthread_cond_signal(&thread->cond);
+  while (thread->state == THREAD_STOPPING)
+    pthread_cond_wait(&thread->cond, &thread->lock);
+  if (thread->state != THREAD_STOPPED) abort();
+  pthread_mutex_unlock(&thread->lock);
+  return NULL;
+}
+
+struct vm_spawn_thread_data { struct gc_heap *heap; Thread *thread; };
+
+static void* vm_thread_proc_inner(struct gc_stack_addr *stack_base,
+                                  void *data) {
+  struct vm_spawn_thread_data *spawn_data = data;
+  struct gc_heap *heap = spawn_data->heap;
+  Thread *thread = spawn_data->thread;
+  size_t bytes = 2 * 1024 * 1024;
+  void *mem = mmap(NULL, bytes, PROT_READ|PROT_WRITE,
+                   MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+  if (mem == MAP_FAILED) {
+    perror("allocating thread stack failed");
+    GC_CRASH();
+  }
+  thread->sp_base = (Value*)(((char *)mem) + bytes);
+  thread->sp_limit = mem;
+
+  thread->mut = gc_init_for_thread(stack_base, heap);
+  gc_mutator_set_roots(thread->mut, &thread->roots);
+
+  // Prep the VM to have one stack slot, holding #f.
+  Value *sp = thread->sp_base - 1;
+  VM vm = (VM){thread, sp};
+  vm.sp[0] = IMMEDIATE_FALSE;
+  thread->roots.safepoint = vm;
+
+  // Now that we mark our stack and have one reserved stack slot,
+  // receive the thunk into the stack slot.
+  gc_call_without_gc(thread->mut,
+                     vm_thread_transition_to_running,
+                     thread);
+
+  // Run the thunk.
+  vm = vm_closure_code(vm.sp[0])(vm, 1);
+  // Must have one value live: the return value.
+  if (vm.sp != thread->sp_base - 1) abort();
+  thread->roots.safepoint = vm;
+
+  // RDV with joiner to send result back.
+  gc_call_without_gc(thread->mut,
+                     vm_thread_transition_to_stopped,
+                     thread);
+
+  gc_finish_for_thread(thread->mut);
+  munmap(mem, bytes);
+  free(thread);
+  return NULL;
+}
+
+static void* vm_thread_proc(void *data) {
+  return gc_call_with_stack_addr(vm_thread_proc_inner, data);
+}
+
+static void* vm_spawn_thread_without_gc(void *data) {
+  struct gc_heap *heap = data;
+
+  Thread *thread = calloc(1, sizeof(Thread));
+  pthread_mutex_init(&thread->lock, NULL);
+  pthread_cond_init(&thread->cond, NULL);
+  thread->state = THREAD_SPAWNING;
+
+  struct vm_spawn_thread_data spawn_data = { heap, thread };
+  pthread_mutex_lock(&thread->lock);
+  pthread_create(&thread->tid, NULL, vm_thread_proc, &spawn_data);
+  while (thread->state == THREAD_SPAWNING)
+    pthread_cond_wait(&thread->cond, &thread->lock);
+
+  if (thread->state != THREAD_WAITING) abort();
+
+  return thread;
+}
+
+static inline Value vm_spawn_thread(struct VM vm, Value *thunk) {
+  if (!is_closure(*thunk)) abort();
+
+  vm.thread->roots.safepoint = vm;
+
+  Thread *thread = gc_call_without_gc(vm.thread->mut,
+                                      vm_spawn_thread_without_gc,
+                                      vm.thread->heap);
+
+  thread->sp_base[-1] = *thunk;
+  thread->state = THREAD_RUNNING;
+  pthread_cond_signal(&thread->cond);
+  pthread_mutex_unlock(&thread->lock);
+
+  ThreadHandle *handle = gc_allocate(vm.thread->mut, sizeof(ThreadHandle));
+  tagged_set_payload(&handle->tag, THREAD_TAG, 0);
+  handle->thread = thread;
+  return value_from_heap_object(handle);
+}
+
+static inline Value vm_join_thread(struct VM vm, Value *handle) {
+  if (!is_thread(*handle)) abort();
+  ThreadHandle *th = value_to_heap_object(*handle);
+  Thread *thread = th->thread;
+
+  vm.thread->roots.safepoint = vm;
+  gc_call_without_gc(vm.thread->mut, vm_thread_wait_for_stopping, thread);
+
+  Value ret = thread->sp_base[-1];
+  thread->state = THREAD_STOPPED;
+  pthread_cond_signal(&thread->cond);
+  pthread_mutex_unlock(&thread->lock);
+
+  return ret;
+}
+
 #endif // WHIFFLE_VM_H

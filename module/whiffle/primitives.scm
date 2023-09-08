@@ -146,9 +146,11 @@
    (vector-ref . %vector-ref)
    (vector-set! . %vector-set!))
   #:export (call-c-primitive
-            call-c-primitive/result)
+            call-c-primitive/result
+            call-c-primitive/alloc)
   ;; Mark as non-declarative, as we should not have inlinable exports.
   #:declarative? #f)
 
 (define (call-c-primitive prim . args) (error "target-only primitive"))
 (define (call-c-primitive/result prim . args) (error "target-only primitive"))
+(define (call-c-primitive/alloc prim . args) (error "target-only primitive"))
