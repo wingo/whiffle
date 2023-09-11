@@ -16,6 +16,8 @@ typedef struct VM {
 
 typedef VM (*Code)(VM, size_t);
 
+struct gc_ephemeron;
+
 typedef union Tagged {uintptr_t tag; Value inline_value;} Tagged;
 typedef struct Pair { Tagged tag; Value cdr; } Pair;
 typedef struct Box { Tagged tag; Value val; } Box;
@@ -26,6 +28,8 @@ typedef struct Closure { Tagged tag; Code code; Value free_vars[]; } Closure;
 // FIXME: a finalizer on ThreadHandle would allow cleanup of the Thread.
 typedef struct ThreadHandle { Tagged tag; Thread *thread; } ThreadHandle;
 typedef struct Bytevector { Tagged tag; uint8_t vals[]; } Bytevector;
+typedef struct gc_ephemeron Ephemeron;
+typedef struct EphemeronTable { Tagged tag; Ephemeron *vals[]; } EphemeronTable;
 
 #define FIXNUM_MAX ((intptr_t)(((uintptr_t)-1)>>2))
 #define FIXNUM_MIN (-FIXNUM_MAX-1)
@@ -49,6 +53,8 @@ typedef struct Bytevector { Tagged tag; uint8_t vals[]; } Bytevector;
 #define SYMBOL_TAG       ((uintptr_t)0x17) /* 0b0001_0111 */
 #define THREAD_TAG       ((uintptr_t)0x1d) /* 0b0001_1101 */
 #define BYTEVECTOR_TAG   ((uintptr_t)0x25) /* 0b0010_0101 */
+#define EPHEMERON_TAG    ((uintptr_t)0x27) /* 0b0010_0111 */
+#define EPHEMERON_TABLE_TAG ((uintptr_t)0x2d) /* 0b0010_1101 */
 #define BUSY_TAG         ((uintptr_t)-1)   /* all 1's */
 
 #define REMEMBERED_FLAG  ((uintptr_t)0x80) /* 0b1000_0000 */

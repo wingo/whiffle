@@ -136,7 +136,7 @@
         (write-char #\space)
         (write-char #\.)
         (write-char #\space)
-        (recur (cdr tail))
+        (recur tail)
         (write-char #\))))))
    ((string? x)
     (cond
@@ -170,6 +170,20 @@
         (recur (bytevector-u8-ref x i))
         (lp (1+ i))))
     (write-char #\)))
+   ((ephemeron? x)
+    (cond
+     ((ephemeron-key x)
+      => (lambda (k)
+           (print "#<ephemeron " #f)
+           (recur k)
+           (write-char #\:)
+           (write-char #\space)
+           (recur (ephemeron-value x))
+           (write-char #\>)))
+     (else
+      (print "#<dead-ephemeron>" #f))))
+   ((ephemeron-table? x)
+    (print "#<ephemeron-table>" #f))
    (else
     (recur "unhandled object :("))))
 
@@ -180,10 +194,31 @@
 (define (displayln x) (display x) (newline))
 
 (define (spawn-thread thunk)
-  ;; make thread object, with space for join val
-  ;; spawn thread with tid
-  ;; set tid in thread object
   (call-c-primitive/alloc "vm_spawn_thread" thunk))
 
 (define (join-thread thread)
   (call-c-primitive/alloc "vm_join_thread" thread))
+
+(define (make-ephemeron key value)
+  (call-c-primitive/alloc "vm_make_ephemeron" key value))
+(define (ephemeron? x)
+  (call-c-primitive/pred "vm_is_ephemeron" x))
+(define (ephemeron-key x)
+  (call-c-primitive/result "vm_ephemeron_key" x))
+(define (ephemeron-value x)
+  (call-c-primitive/result "vm_ephemeron_value" x))
+(define (ephemeron-next x)
+  (call-c-primitive/result "vm_ephemeron_next" x))
+(define (ephemeron-kill! x)
+  (call-c-primitive "vm_ephemeron_kill" x))
+
+(define (make-ephemeron-table size)
+  (call-c-primitive/alloc "vm_make_ephemeron_table" size))
+(define (ephemeron-table? x)
+  (call-c-primitive/pred "vm_is_ephemeron_table" x))
+(define (ephemeron-table-length x)
+  (call-c-primitive/result "vm_ephemeron_table_length" x))
+(define (ephemeron-table-ref v i)
+  (call-c-primitive/result "vm_ephemeron_table_ref" v i))
+(define (ephemeron-table-push! v i e)
+  (call-c-primitive "vm_ephemeron_table_push" v i e))

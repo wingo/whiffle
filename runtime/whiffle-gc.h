@@ -7,6 +7,7 @@
 #include "whiffle/types.h"
 #include "gc-config.h"
 #include "gc-embedder-api.h"
+#include "gc-ephemeron.h"
 
 #define GC_EMBEDDER_EPHEMERON_HEADER Tagged tag;
 
@@ -137,6 +138,28 @@ static inline void gc_trace_object(struct gc_ref ref,
       size_t len = tagged_payload(&v->tag);
       if (size)
         *size = sizeof(*v) + sizeof(uint8_t) * len;
+      return;
+    }
+
+    case EPHEMERON_TAG: {
+      Ephemeron *e = gc_ref_heap_object(ref);
+      if (trace_edge)
+        gc_trace_ephemeron(e, trace_edge, heap, trace_data);
+      if (size)
+        *size = gc_ephemeron_size();
+      return;
+    }
+
+    case EPHEMERON_TABLE_TAG: {
+      EphemeronTable *t = gc_ref_heap_object(ref);
+      size_t len = tagged_payload(&t->tag);
+      if (trace_edge) {
+        for (size_t i = 0; i < len; i++)
+          if (gc_ephemeron_chain_head(&t->vals[i]))
+            trace_edge(gc_edge(&t->vals[i]), heap, trace_data);
+      }
+      if (size)
+        *size = sizeof(*t) + sizeof(Ephemeron*) * len;
       return;
     }
 

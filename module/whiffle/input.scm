@@ -28,7 +28,8 @@
    (set-current-module (resolve-module '(whiffle primitives)))
    (add-interesting-primitive! 'call-c-primitive)
    (add-interesting-primitive! 'call-c-primitive/result)
-   (add-interesting-primitive! 'call-c-primitive/alloc)))
+   (add-interesting-primitive! 'call-c-primitive/alloc)
+   (add-interesting-primitive! 'call-c-primitive/pred)))
 
 (define (make-fresh-whiffle-module)
   (let ((mod (make-fresh-user-module)))

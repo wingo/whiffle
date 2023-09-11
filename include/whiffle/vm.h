@@ -9,6 +9,7 @@
 #include <sys/mman.h>
 
 #include <gc-api.h>
+#include <gc-ephemeron.h>
 
 #include "types.h"
 
@@ -318,6 +319,99 @@ static inline void vm_bytevector_u8_set(Value bytevector, Value idx, Value val) 
   v->vals[c_idx] = c_val;
 }
 
+static inline Value vm_make_ephemeron(VM vm, Value *key_loc, Value *value_loc) {
+  if (!is_heap_object(*key_loc)) abort();
+  vm.thread->roots.safepoint = vm;
+  Ephemeron *ret = gc_allocate_ephemeron(vm.thread->mut);
+  tagged_set_payload((Tagged*)ret, EPHEMERON_TAG, 0);
+  gc_ephemeron_init(vm.thread->mut, ret,
+                    gc_ref_from_heap_object(value_to_heap_object(*key_loc)),
+                    gc_ref(value_loc->payload));
+  return value_from_heap_object(ret);
+}
+
+static inline int is_ephemeron(Value x) {
+  return is_heap_object(x) && tagged_kind(value_to_heap_object(x)) == EPHEMERON_TAG;
+}
+
+static inline Value vm_ephemeron_key(Value ephemeron) {
+  if (!is_ephemeron(ephemeron)) abort();
+  Ephemeron *e = value_to_heap_object(ephemeron);
+  struct gc_ref k = gc_ephemeron_key(e);
+  return gc_ref_is_heap_object(k)
+    ? value_from_heap_object(gc_ref_heap_object(k)) : IMMEDIATE_FALSE;
+}
+
+static inline Value vm_ephemeron_value(Value ephemeron) {
+  if (!is_ephemeron(ephemeron)) abort();
+  Ephemeron *e = value_to_heap_object(ephemeron);
+  struct gc_ref v = gc_ephemeron_value(e);
+  return gc_ref_is_heap_object(v)
+    ? value_from_heap_object(gc_ref_heap_object(v)) : IMMEDIATE_FALSE;
+}
+
+static inline Value vm_ephemeron_next(Value ephemeron) {
+  if (!is_ephemeron(ephemeron)) abort();
+  Ephemeron *e = value_to_heap_object(ephemeron);
+  Ephemeron *next = gc_ephemeron_chain_next(e);
+  return next ? value_from_heap_object(next) : IMMEDIATE_FALSE;
+}
+
+static inline void vm_ephemeron_kill(Value ephemeron) {
+  if (!is_ephemeron(ephemeron)) abort();
+  Ephemeron *e = value_to_heap_object(ephemeron);
+  gc_ephemeron_mark_dead(e);
+}
+
+static inline Value vm_make_ephemeron_table(VM vm, Value *size_loc) {
+  if (!is_fixnum(*size_loc)) abort();
+  intptr_t c_size = fixnum_value(*size_loc);
+  if (c_size < 0 || c_size > (((uintptr_t)-1) >> 8)) abort();
+  size_t bytes = sizeof(EphemeronTable) + c_size * sizeof(Value);
+  EphemeronTable *ret = gc_allocate_fast(vm.thread->mut, bytes);
+  if (GC_UNLIKELY(!ret)) {
+    vm.thread->roots.safepoint = vm;
+    ret = gc_allocate_slow(vm.thread->mut, bytes);
+  }
+  tagged_set_payload(&ret->tag, EPHEMERON_TABLE_TAG, c_size);
+  // No initialization of fields, as we rely on collector to provide
+  // zero-initialized memory.
+  return value_from_heap_object(ret);
+}
+
+static inline int is_ephemeron_table(Value x) {
+  return is_heap_object(x) && tagged_kind(value_to_heap_object(x)) == EPHEMERON_TABLE_TAG;
+}
+
+static inline Value vm_ephemeron_table_length(Value table) {
+  if (!is_ephemeron_table(table)) abort();
+  EphemeronTable *t = value_to_heap_object(table);
+  return value_from_fixnum(tagged_payload(&t->tag));
+}
+
+static inline Value vm_ephemeron_table_ref(Value table, Value idx) {
+  if (!is_ephemeron_table(table)) abort();
+  EphemeronTable *t = value_to_heap_object(table);
+  if (!is_fixnum(idx)) abort();
+  size_t size = tagged_payload(&t->tag);
+  intptr_t c_idx = fixnum_value(idx);
+  if (c_idx < 0 || c_idx >= size) abort();
+  Ephemeron *e = gc_ephemeron_chain_head(&t->vals[c_idx]);
+  return e ? value_from_heap_object(e) : IMMEDIATE_FALSE;
+}
+
+static inline void vm_ephemeron_table_push(Value table, Value idx, Value ephemeron) {
+  if (!is_ephemeron_table(table)) abort();
+  if (!is_ephemeron(ephemeron)) abort();
+  EphemeronTable *t = value_to_heap_object(table);
+  Ephemeron *e = value_to_heap_object(ephemeron);
+  if (!is_fixnum(idx)) abort();
+  size_t size = tagged_payload(&t->tag);
+  intptr_t c_idx = fixnum_value(idx);
+  if (c_idx < 0 || c_idx >= size) abort();
+  gc_ephemeron_chain_push(&t->vals[c_idx], e);
+}
+
 static inline Value vm_char_to_integer(Value x) {
   return value_from_fixnum(value_to_char(x));
 }
@@ -358,6 +452,14 @@ static inline int vm_is_symbol(Value val) {
 
 static inline int vm_is_bytevector(Value val) {
   return is_bytevector(val);
+}
+
+static inline int vm_is_ephemeron(Value val) {
+  return is_ephemeron(val);
+}
+
+static inline int vm_is_ephemeron_table(Value val) {
+  return is_ephemeron_table(val);
 }
 
 static inline int vm_is_char(Value val) {

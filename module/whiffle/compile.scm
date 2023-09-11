@@ -246,6 +246,13 @@
 (define (emit-c-primcall/alloc asm prim dst args junk-slots)
   (<-code asm "  vm.sp[~a] = ~a(vm_trim(vm, ~a)~{, &vm.sp[~a]~});\n" dst prim
           junk-slots args))
+(define (emit-jump-if-not-c-primcall asm prim args target)
+  (<-code asm "  if (!~a(~a)) goto L~a;\n" prim
+          (string-join (map (lambda (arg)
+                              (format #f "vm.sp[~a]" arg))
+                            args)
+                       ", ")
+          target))
 (define (emit-jump asm target)
   (<-code asm "  goto L~a;\n" target))
 (define (emit-jump-if-not-false asm val target)
@@ -505,7 +512,8 @@
 
          (((or 'call-c-primitive
                'call-c-primitive/result
-               'call-c-primitive/alloc)
+               'call-c-primitive/alloc
+               'call-c-primitive/pred)
            ($ <const> _ (? string? c-prim))
            . args)
           (let ((exp (make-primcall src `(,name ,c-prim) (map for-value args))))
@@ -519,7 +527,11 @@
                (match ctx
                  ('value (wrap exp))
                  ('effect exp)
-                 ('tail (return (wrap exp))))))))
+                 ('tail (return (wrap exp)))))
+              ('call-c-primitive/pred
+               (make-conditional src exp
+                                 (for-tail (make-const src #t))
+                                 (for-tail (make-const src #f)))))))
 
          ;; Now that we handled special cases, ensure remaining primcalls
          ;; are understood by the code generator, and if not, error.
@@ -656,7 +668,8 @@ lambda-case clause @var{clause}."
       (($ <primcall> src 'drop (x))
        (visit x))
 
-      (($ <primcall> src ('call-c-primitive c-prim) args)
+      (($ <primcall> src ((or 'call-c-primitive
+                              'call-c-primitive/pred) c-prim) args)
        (visit-args args))
       (($ <primcall> src ((or 'call-c-primitive/result
                               'call-c-primitive/alloc) c-prim) args)
@@ -761,6 +774,11 @@ lambda-case clause @var{clause}."
 
     (define (for-test exp kf env)
       (match exp
+        (($ <primcall> src ('call-c-primitive/pred c-prim) args)
+         (let* ((env (push-args args env))
+                (arg-offsets (reverse (iota (length args) (env-sp-offset env)))))
+           (emit-jump-if-not-c-primcall asm c-prim arg-offsets kf)))
+
         (($ <primcall> src name args)
          (let ((prim (lookup-primitive name)))
            (unless (primitive-predicate? prim)
