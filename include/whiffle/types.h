@@ -25,6 +25,7 @@ typedef struct Symbol { Tagged tag; String *str; } Symbol;
 typedef struct Closure { Tagged tag; Code code; Value free_vars[]; } Closure;
 // FIXME: a finalizer on ThreadHandle would allow cleanup of the Thread.
 typedef struct ThreadHandle { Tagged tag; Thread *thread; } ThreadHandle;
+typedef struct Bytevector { Tagged tag; uint8_t vals[]; } Bytevector;
 
 #define FIXNUM_MAX ((intptr_t)(((uintptr_t)-1)>>2))
 #define FIXNUM_MIN (-FIXNUM_MAX-1)
@@ -47,6 +48,7 @@ typedef struct ThreadHandle { Tagged tag; Thread *thread; } ThreadHandle;
 #define STRING_TAG       ((uintptr_t)0x15) /* 0b0001_0101 */
 #define SYMBOL_TAG       ((uintptr_t)0x17) /* 0b0001_0111 */
 #define THREAD_TAG       ((uintptr_t)0x1d) /* 0b0001_1101 */
+#define BYTEVECTOR_TAG   ((uintptr_t)0x25) /* 0b0010_0101 */
 #define BUSY_TAG         ((uintptr_t)-1)   /* all 1's */
 
 #define REMEMBERED_FLAG  ((uintptr_t)0x80) /* 0b1000_0000 */
@@ -58,6 +60,7 @@ typedef struct ThreadHandle { Tagged tag; Thread *thread; } ThreadHandle;
 #define STATIC_STRING(v)        {{STRING_TAG}, (Vector*)v}
 #define STATIC_SYMBOL(s)        {{SYMBOL_TAG}, (String*)s}
 #define STATIC_CLOSURE(label)   {{CLOSURE_TAG}, &label}
+#define STATIC_BYTEVECTOR(len, ...) {{BYTEVECTOR_TAG|(len<<8)}, {__VA_ARGS__}}
 
 #define IMMEDIATE_INTEGER_CODE(i)  ((uintptr_t)((i << 2) | FIXNUM_VALUE_TAG))
 #define IMMEDIATE_CHAR_CODE(i)     ((uintptr_t)((((uintptr_t)i) << 4) | CHAR_VALUE_TAG))

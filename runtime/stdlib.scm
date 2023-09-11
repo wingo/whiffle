@@ -79,6 +79,14 @@
 (define (string->list str)
   (vector->list (string->vector str)))
 
+(define (make-bytevector size init)
+  (call-c-primitive/alloc "vm_make_bytevector" size init))
+
+(define (bytevector? bv) (%bytevector? bv))
+(define (bytevector-length bv) (%bytevector-length bv))
+(define (bytevector-u8-ref bv i) (%bytevector-u8-ref bv i))
+(define (bytevector-u8-set! bv i u8) (%bytevector-u8-set! bv i u8))
+
 (define (write-char ch)
   (call-c-primitive "vm_write_char" ch))
 
@@ -91,6 +99,12 @@
    ((null? x)
     (write-char #\()
     (write-char #\)))
+   ((not x)
+    (write-char #\#)
+    (write-char #\f))
+   ((eq? x #t)
+    (write-char #\#)
+    (write-char #\t))
    ((exact-integer? x)
     (cond
      ((< x 0)
@@ -142,6 +156,19 @@
     (write-char #\#)
     (write-char #\()
     (recur (vector->list x))
+    (write-char #\)))
+   ((bytevector? x)
+    (write-char #\#)
+    (write-char #\v)
+    (write-char #\u)
+    (write-char #\8)
+    (write-char #\()
+    (let lp ((i 0))
+      (when (< i (bytevector-length x))
+        (unless (zero? i)
+          (write-char #\space))
+        (recur (bytevector-u8-ref x i))
+        (lp (1+ i))))
     (write-char #\)))
    (else
     (recur "unhandled object :("))))

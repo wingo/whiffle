@@ -22,6 +22,7 @@
   #:use-module (ice-9 format)
   #:use-module (language tree-il)
   #:use-module ((language tree-il optimize) #:select (make-lowerer))
+  #:use-module (rnrs bytevectors)
   #:use-module ((srfi srfi-1) #:select (fold
                                         fold-right
                                         lset-adjoin lset-union lset-difference))
@@ -109,6 +110,12 @@
          (<-decl asm
                  "static const Symbol C~a = STATIC_SYMBOL (~a);\n"
                  idx v)
+         idx))
+      ((? bytevector?)
+       (let* ((idx (intern!)))
+         (<-decl asm
+                 "static const Bytevector C~a = STATIC_BYTEVECTOR (~a~{, ~a~});\n"
+                 idx (bytevector-length const) (bytevector->u8-list const))
          idx))
       (($ <static-closure> label)
        (let* ((idx (intern!)))
@@ -222,6 +229,12 @@
   (<-code asm "  vm.sp[~a] = vm_char_to_integer(vm.sp[~a]);\n" dst ch))
 (define (emit-integer->char asm dst i)
   (<-code asm "  vm.sp[~a] = vm_integer_to_char(vm.sp[~a]);\n" dst i))
+(define (emit-bytevector-length asm dst v)
+  (<-code asm "  vm.sp[~a] = vm_bytevector_length(vm.sp[~a]);\n" dst v))
+(define (emit-bytevector-u8-ref asm dst v idx)
+  (<-code asm "  vm.sp[~a] = vm_bytevector_u8_ref(vm.sp[~a], vm.sp[~a]);\n" dst v idx))
+(define (emit-bytevector-u8-set asm v idx val)
+  (<-code asm "  vm_bytevector_u8_set(vm.sp[~a], vm.sp[~a], vm.sp[~a]);\n" v idx val))
 (define (emit-c-primcall asm prim args)
   (<-code asm "  ~a(~a);\n" prim
           (string-join (map (lambda (arg) (format #f "vm.sp[~a]" arg)) args)
@@ -249,6 +262,8 @@
   (<-code asm "  if (!vm_is_symbol(vm.sp[~a])) goto L~a;\n" val target))
 (define (emit-jump-if-not-char asm val target)
   (<-code asm "  if (!vm_is_char(vm.sp[~a])) goto L~a;\n" val target))
+(define (emit-jump-if-not-bytevector asm val target)
+  (<-code asm "  if (!vm_is_bytevector(vm.sp[~a])) goto L~a;\n" val target))
 (define (emit-jump-if-not-eq asm a b target)
   (<-code asm "  if (!vm_is_eq(vm.sp[~a], vm.sp[~a])) goto L~a;\n" a b target))
 (define (emit-jump-if-not-< asm a b target)
@@ -318,6 +333,11 @@
   (char->integer    #:nargs 1 #:has-result? #t #:emit emit-char->integer)
   (integer->char    #:nargs 1 #:has-result? #t #:emit emit-integer->char)
 
+  (bytevector?      #:nargs 1 #:predicate? #t  #:emit emit-jump-if-not-bytevector)
+  (bytevector-length #:nargs 1 #:has-result? #t #:emit emit-bytevector-length)
+  (bytevector-u8-ref #:nargs 2 #:has-result? #t #:emit emit-bytevector-u8-ref)
+  (bytevector-u8-set! #:nargs 3                #:emit emit-bytevector-u8-set)
+  
   (false?           #:nargs 1 #:predicate? #t  #:emit emit-jump-if-not-false)
   (eq?              #:nargs 2 #:predicate? #t  #:emit emit-jump-if-not-eq)
   (<                #:nargs 2 #:predicate? #t  #:emit emit-jump-if-not-<)

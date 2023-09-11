@@ -267,6 +267,57 @@ static inline Value vm_symbol_to_string(Value sym) {
   return value_from_heap_object(s->str);
 }
 
+static inline Value vm_make_bytevector(VM vm, Value size, Value init) {
+  if (!is_fixnum(size)) abort();
+  intptr_t c_size = fixnum_value(size);
+  intptr_t c_init = fixnum_value(init);
+  if (c_size < 0 || c_size > (((uintptr_t)-1) >> 8)) abort();
+  if (c_init < -128 || c_init > 255) abort();
+  size_t bytes = sizeof(Bytevector) + c_size * sizeof(uint8_t);
+  Bytevector *ret = gc_allocate_fast(vm.thread->mut, bytes);
+  if (GC_UNLIKELY(!ret)) {
+    vm.thread->roots.safepoint = vm;
+    ret = gc_allocate_slow(vm.thread->mut, bytes);
+  }
+  tagged_set_payload(&ret->tag, BYTEVECTOR_TAG, c_size);
+  memset(ret->vals, c_init, c_size);
+
+  return value_from_heap_object(ret);
+}
+
+static inline int is_bytevector(Value x) {
+  return is_heap_object(x) && tagged_kind(value_to_heap_object(x)) == BYTEVECTOR_TAG;
+}
+
+static inline Value vm_bytevector_length(Value bytevector) {
+  if (!is_bytevector(bytevector)) abort();
+  Bytevector *v = value_to_heap_object(bytevector);
+  return make_fixnum(tagged_payload(&v->tag));
+}
+
+static inline Value vm_bytevector_u8_ref(Value bytevector, Value idx) {
+  if (!is_bytevector(bytevector)) abort();
+  if (!is_fixnum(idx)) abort();
+  Bytevector *v = value_to_heap_object(bytevector);
+  size_t size = tagged_payload(&v->tag);
+  intptr_t c_idx = fixnum_value(idx);
+  if (c_idx < 0 || c_idx >= size) abort();
+  return value_from_fixnum(v->vals[c_idx]);
+}
+
+static inline void vm_bytevector_u8_set(Value bytevector, Value idx, Value val) {
+  if (!is_bytevector(bytevector)) abort();
+  if (!is_fixnum(idx)) abort();
+  if (!is_fixnum(val)) abort();
+  Bytevector *v = value_to_heap_object(bytevector);
+  size_t size = tagged_payload(&v->tag);
+  intptr_t c_idx = fixnum_value(idx);
+  intptr_t c_val = fixnum_value(val);
+  if (c_idx < 0 || c_idx >= size) abort();
+  if (c_val < -128 || 255 < c_val) abort();
+  v->vals[c_idx] = c_val;
+}
+
 static inline Value vm_char_to_integer(Value x) {
   return value_from_fixnum(value_to_char(x));
 }
@@ -303,6 +354,10 @@ static inline int vm_is_string(Value val) {
 
 static inline int vm_is_symbol(Value val) {
   return is_symbol(val);
+}
+
+static inline int vm_is_bytevector(Value val) {
+  return is_bytevector(val);
 }
 
 static inline int vm_is_char(Value val) {

@@ -30,6 +30,10 @@
   #:use-module ((srfi srfi-11)
                 #:select
                 (let-values let*-values))
+  #:use-module ((rnrs bytevectors)
+                #:select
+                (bytevector?
+                 bytevector-length bytevector-u8-ref bytevector-u8-set!))
   #:use-module ((guile)
                 #:select
                 (_
@@ -144,7 +148,12 @@
    (vector . %vector)
    (vector-length . %vector-length)
    (vector-ref . %vector-ref)
-   (vector-set! . %vector-set!))
+   (vector-set! . %vector-set!)
+
+   (bytevector? . %bytevector?)
+   (bytevector-length . %bytevector-length)
+   (bytevector-u8-ref . %bytevector-u8-ref)
+   (bytevector-u8-set! . %bytevector-u8-set!))
   #:export (call-c-primitive
             call-c-primitive/result
             call-c-primitive/alloc)

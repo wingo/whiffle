@@ -132,6 +132,14 @@ static inline void gc_trace_object(struct gc_ref ref,
       return;
     }
 
+    case BYTEVECTOR_TAG: {
+      Bytevector *v = gc_ref_heap_object(ref);
+      size_t len = tagged_payload(&v->tag);
+      if (size)
+        *size = sizeof(*v) + sizeof(uint8_t) * len;
+      return;
+    }
+
     default:
       GC_CRASH();
   }
