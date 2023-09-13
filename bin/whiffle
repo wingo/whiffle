@@ -49,7 +49,9 @@ exec "${GUILE:-guile}" "$0" "$@"
     (format port "    --gc=GC              choose gc implementation; see --gc=helpa\n")
     (format port "    --preserve-builddir  keep the build directory around\n")
     (format port "    --optimize/-O LEVEL  optimize at level LEVEL; default is 2\n")
-    (format port "    --warn/-W LEVEL      warn at level LEVEL; default is 2\n"))
+    (format port "    --warn/-W LEVEL      warn at level LEVEL; default is 2\n")
+    (format port "    --check-heap-consistency\n")
+    (format port "                         enable redundant self-checks in compiled program\n"))
 
   (define options
     (getopt-long args
@@ -60,7 +62,8 @@ exec "${GUILE:-guile}" "$0" "$@"
                    (optimize (single-char #\O) (value #t))
                    (warn (single-char #\W) (value #t))
                    (gc (value #t))
-                   (output (single-char #\o) (value #t)))))
+                   (output (single-char #\o) (value #t))
+                   (check-heap-consistency (value #f)))))
   (when (option-ref options 'help #f)
     (usage (current-output-port))
     (exit 0))
@@ -102,6 +105,8 @@ exec "${GUILE:-guile}" "$0" "$@"
         (error "unexpected warning level")))
   (define gc
     (option-ref options 'gc "semi"))
+  (define check-heap-consistency?
+    (option-ref options 'check-heap-consistency #f))
   (when (equal? gc "help")
     (format #t "\navailable GC implementations:\n")
     (format #t "  semi                   serial copying\n")
@@ -128,7 +133,8 @@ exec "${GUILE:-guile}" "$0" "$@"
          #:optimization-level optimization-level
          #:warning-level warning-level
          #:gc gc
-         #:preserve-builddir? preserve-builddir?))
+         #:preserve-builddir? preserve-builddir?
+         #:check-heap-consistency? check-heap-consistency?))
   (display result-str)
   (exit 0))
 

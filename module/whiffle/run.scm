@@ -19,6 +19,7 @@
   #:use-module (ice-9 match)
   #:use-module (ice-9 format)
   #:use-module (whiffle compile)
+  #:use-module (whiffle features)
   #:use-module (whiffle input)
   #:use-module (whiffle paths)
   #:export (run))
@@ -42,13 +43,16 @@
               (gc "semi")
               (fail (lambda (format-string . args)
                       (apply format (current-error-port) format-string args)
-                      (exit 1))))
+                      (exit 1)))
+              check-heap-consistency?)
   (when (and (or output-file assemble?) (pair? args))
     (fail "unexpected args while only compiling or assembling"))
   (define c-code
-    (compile-to-c (if expr
-                      (expand expr)
-                      (read-and-expand input))
+    (compile-to-c (parameterize
+                      ((check-heap-consistency-feature check-heap-consistency?))
+                    (if expr
+                        (expand expr)
+                        (read-and-expand input)))
                   #:optimization-level optimization-level
                   #:warning-level warning-level))
 

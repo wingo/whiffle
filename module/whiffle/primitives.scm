@@ -87,6 +87,8 @@
                  vector-length
                  vector-ref
                  vector-set!))
+  #:use-module ((whiffle features)
+                #:select (whiffle-cond-expand))
   #:re-export
   (_
    ... => else
@@ -101,7 +103,7 @@
    include
    define-syntax let-syntax letrec-syntax
    syntax-rules syntax-error
-   cond-expand
+   (whiffle-cond-expand . cond-expand)
    include-from-path
    define-syntax-rule
    syntax-case syntax quasisyntax unsyntax unsyntax-splicing
