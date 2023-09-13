@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <sys/time.h>
 
 #include <gc-api.h>
 #include <gc-ephemeron.h>
@@ -665,6 +666,14 @@ static inline Value vm_join_thread(struct VM vm, Value *handle) {
   pthread_mutex_unlock(&thread->lock);
 
   return ret;
+}
+
+static inline Value vm_current_microseconds(void) {
+  struct timeval t;
+  if (gettimeofday(&t, NULL) == -1) abort();
+  unsigned long usec = t.tv_sec * 1000 * 1000 + t.tv_usec;
+  if (usec > (unsigned long)FIXNUM_MAX) abort();
+  return value_from_fixnum(usec);
 }
 
 #endif // WHIFFLE_VM_H
