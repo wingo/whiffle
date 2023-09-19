@@ -249,6 +249,11 @@ static inline void vm_vector_set(Value vector, Value idx, Value val) {
   v->vals[c_idx] = val;
 }
 
+static inline void vm_vector_init(Value vector, size_t idx, Value val) {
+  Vector *v = value_to_heap_object(vector);
+  v->vals[idx] = val;
+}
+
 static inline int is_string(Value x) {
   return is_heap_object(x) && tagged_kind(value_to_heap_object(x)) == STRING_TAG;
 }
@@ -269,10 +274,10 @@ static inline Value vm_symbol_to_string(Value sym) {
   return value_from_heap_object(s->str);
 }
 
-static inline Value vm_make_bytevector(VM vm, Value size, Value init) {
-  if (!is_fixnum(size)) abort();
-  intptr_t c_size = fixnum_value(size);
-  intptr_t c_init = fixnum_value(init);
+static inline Value vm_make_bytevector(VM vm, Value *size, Value *init) {
+  if (!is_fixnum(*size)) abort();
+  intptr_t c_size = fixnum_value(*size);
+  intptr_t c_init = fixnum_value(*init);
   if (c_size < 0 || c_size > (((uintptr_t)-1) >> 8)) abort();
   if (c_init < -128 || c_init > 255) abort();
   size_t bytes = sizeof(Bytevector) + c_size * sizeof(uint8_t);
@@ -674,6 +679,23 @@ static inline Value vm_current_microseconds(void) {
   unsigned long usec = t.tv_sec * 1000 * 1000 + t.tv_usec;
   if (usec > (unsigned long)FIXNUM_MAX) abort();
   return value_from_fixnum(usec);
+}
+
+static inline void vm_die(void) {
+  fflush(stdout);
+  abort();
+}
+
+static inline void vm_wrong_num_args(size_t expected, size_t actual) {
+  fflush(stdout);
+  fprintf(stderr, "wrong number of args to procedure (expected %zu, got %zu)\n",
+          expected, actual);
+  exit(1);
+}
+
+static inline Value vm_gc_print_stats(struct VM vm) {
+  gc_print_stats(vm.thread->heap);
+  return IMMEDIATE_TRUE;
 }
 
 #endif // WHIFFLE_VM_H

@@ -37,6 +37,10 @@
          ((_ . status)
           (failure str status)))))))
 
+(define (precise-gc? gc)
+  (and (not (string-contains gc "bdw"))
+       (not (string-contains gc "conservative"))))
+
 (define* (run #:key input expr output-file assemble? (args '())
               preserve-builddir?
               (optimization-level 2) (warning-level 2)
@@ -49,7 +53,8 @@
     (fail "unexpected args while only compiling or assembling"))
   (define c-code
     (compile-to-c (parameterize
-                      ((check-heap-consistency-feature check-heap-consistency?))
+                      ((check-heap-consistency-feature check-heap-consistency?)
+                       (precise-gc-feature (precise-gc? gc)))
                     (if expr
                         (expand expr)
                         (read-and-expand input)))

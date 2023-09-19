@@ -16,9 +16,11 @@
 
 (define-module (whiffle features)
   #:export (whiffle-cond-expand
-            check-heap-consistency-feature))
+            check-heap-consistency-feature
+            precise-gc-feature))
 
 (define check-heap-consistency-feature (make-parameter #f))
+(define precise-gc-feature (make-parameter #f))
 
 (define-syntax whiffle-cond-expand
   (lambda (x)
@@ -56,5 +58,7 @@
   (define (add-feature-if test feature features)
     (if test (cons feature features) features))
   (add-feature-if
-   (check-heap-consistency-feature) 'check-heap-consistency
-   '()))
+   (precise-gc-feature) 'precise-gc
+   (add-feature-if
+    (check-heap-consistency-feature) 'check-heap-consistency
+    '())))

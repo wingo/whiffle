@@ -143,7 +143,7 @@
      (quote-strings?
       (write-char #\")
       (for-each (lambda (ch)
-                  (when (eq? ch #\")
+                  (when (or (eq? ch #\") (eq? ch #\\))
                     (write-char #\\))
                   (write-char ch))
                 (string->list x))
@@ -225,3 +225,27 @@
 
 (define (current-microseconds)
   (call-c-primitive/result "vm_current_microseconds"))
+
+(define-syntax-rule (<< expr ...)
+  (begin (display expr) ... (newline)))
+
+(define-syntax-rule (error expr ...)
+  (begin
+    (<< expr ...)
+    (call-c-primitive "vm_die")))
+
+(define (parallel n f)
+  (let ((threads (let lp ((i 1))
+                   (if (< i n)
+                       (cons (spawn-thread (lambda () (f i)))
+                             (lp (1+ i)))
+                       '()))))
+    (f 0)
+    (for-each join-thread threads)))
+
+(define (print-elapsed what start)
+  (let ((elapsed (- (current-microseconds) start)))
+    (<< what ": completed in " elapsed " usec.")))
+
+(define (gc-print-stats)
+  (call-c-primitive/alloc "vm_gc_print_stats"))

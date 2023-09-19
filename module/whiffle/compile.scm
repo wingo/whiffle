@@ -58,7 +58,7 @@
   (<-code asm "}\n\n"))
 
 (define (emit-assert-nargs-= asm nargs)
-  (<-code asm "  if (nargs != ~a) abort();\n" nargs))
+  (<-code asm "  if (nargs != ~a) vm_wrong_num_args(~a, nargs);\n" nargs nargs))
 
 (define (emit-expand-sp asm slots)
   (unless (zero? slots)
@@ -329,6 +329,7 @@
   (vector-length    #:nargs 1 #:has-result? #t #:emit emit-vector-length)
   (vector-ref       #:nargs 2 #:has-result? #t #:emit emit-vector-ref)
   (vector-set!      #:nargs 3                  #:emit emit-vector-set)
+  (vector-init!     #:nargs 3                  #:emit emit-vector-init)
   
   (string?          #:nargs 1 #:predicate? #t  #:emit emit-jump-if-not-string)
   (string->vector   #:nargs 1 #:has-result? #t #:emit emit-string->vector)
@@ -849,6 +850,10 @@ lambda-case clause @var{clause}."
                                   args-offset)
            (maybe-mov dst)))
 
+        (($ <primcall> src 'allocate-vector (($ <const> _ size)))
+         (let* ((junk-slots (env-sp-offset env)))
+           (emit-allocate-vector asm dst size junk-slots)))
+
         (($ <primcall> src name args)
          (let ((prim (lookup-primitive name)))
            (unless (primitive-has-result? prim)
@@ -922,6 +927,14 @@ lambda-case clause @var{clause}."
            (emit-c-primcall asm c-prim arg-offsets)
            (values)))
 
+        (($ <primcall> src 'vector-init!
+            (($ <lexical-ref> _ _ v) ($ <const> _ idx) val))
+         (let* ((env (for-push val env))
+                (val (env-sp-offset env)))
+           (match (lookup-bound v env)
+             (#f (error "impossorous"))
+             (v (emit-vector-init asm v idx val)))))
+
         (($ <primcall> src name args)
          (let ((prim (lookup-primitive name)))
            (when (primitive-has-result? prim)
@@ -934,6 +947,10 @@ lambda-case clause @var{clause}."
                (1 (emit asm
                         (env-sp-offset env)))
                (2 (emit asm
+                        (env-sp-offset (cdr env))
+                        (env-sp-offset env)))
+               (3 (emit asm
+                        (env-sp-offset (cddr env))
                         (env-sp-offset (cdr env))
                         (env-sp-offset env))))))
          (values))
@@ -1051,8 +1068,8 @@ lambda-case clause @var{clause}."
             (<-code asm "  VM vm = vm_prepare_main_thread(&thread, argc);\n")
             (emit-constant-ref asm "argc - 1" (make-static-closure label))
             (<-code asm "  vm = F~a(vm_trim(vm, argc - 1), 1);\n" label)
-            (<-code asm "  if (argc > 1) {")
-            (<-code asm "    vm.sp -= argc - 1;")
+            (<-code asm "  if (argc > 1) {\n")
+            (<-code asm "    vm.sp -= argc - 1;\n")
             (<-code asm "    for (int i = 1; i < argc; i++)\n")
             (<-code asm "      vm.sp[argc-1-i] = vm_parse_value(vm_trim(vm, argc-i), argv[i]);\n")
             (<-code asm "    vm = vm_closure_code(vm.sp[argc-1])(vm, argc);\n")
