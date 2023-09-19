@@ -44,6 +44,7 @@
 (define (1+ x) (+ x 1))
 (define (1- x) (- x 1))
 (define (zero? x) (eq? x 0))
+(define (negative? x) (< x 0))
 (define (not x) (if x #f #t))
 
 (define (map f l)
