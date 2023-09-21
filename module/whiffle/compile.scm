@@ -198,7 +198,8 @@
   (<-code asm "  vm.sp[~a] = vm_box(vm_trim(vm, ~a), &vm.sp[~a]);\n" dst junk-slots src))
 (define (emit-box-ref asm dst src)
   (<-code asm "  vm.sp[~a] = vm_box_ref(vm.sp[~a]);\n" dst src))
-;; boxed-bound-set / boxed-free-set are sufficient for our needs 
+(define (emit-box-set asm box val)
+  (<-code asm "  vm_box_set(vm.sp[~a], vm.sp[~a]);\n" box val))
 (define (emit-cons asm dst a b junk-slots)
   (<-code asm "  vm.sp[~a] = vm_cons(vm_trim(vm, ~a), &vm.sp[~a], &vm.sp[~a]);\n" dst junk-slots a b))
 (define (emit-car asm dst src)
@@ -271,6 +272,8 @@
   (<-code asm "  if (!vm_is_char(vm.sp[~a])) goto L~a;\n" val target))
 (define (emit-jump-if-not-bytevector asm val target)
   (<-code asm "  if (!vm_is_bytevector(vm.sp[~a])) goto L~a;\n" val target))
+(define (emit-jump-if-not-box asm val target)
+  (<-code asm "  if (!vm_is_box(vm.sp[~a])) goto L~a;\n" val target))
 (define (emit-jump-if-not-eq asm a b target)
   (<-code asm "  if (!vm_is_eq(vm.sp[~a], vm.sp[~a])) goto L~a;\n" a b target))
 (define (emit-jump-if-not-< asm a b target)
@@ -346,6 +349,12 @@
   (bytevector-u8-ref #:nargs 2 #:has-result? #t #:emit emit-bytevector-u8-ref)
   (bytevector-u8-set! #:nargs 3                #:emit emit-bytevector-u8-set)
   
+  (variable?        #:nargs 1 #:predicate? #t  #:emit emit-jump-if-not-box)
+  (make-variable    #:nargs 1 #:has-result? #t #:emit emit-box
+                    #:allocates? #t)
+  (variable-ref     #:nargs 1 #:has-result? #t #:emit emit-box-ref)
+  (variable-set!    #:nargs 2                  #:emit emit-box-set)
+
   (false?           #:nargs 1 #:predicate? #t  #:emit emit-jump-if-not-false)
   (eq?              #:nargs 2 #:predicate? #t  #:emit emit-jump-if-not-eq)
   (<                #:nargs 2 #:predicate? #t  #:emit emit-jump-if-not-<)
@@ -1008,6 +1017,11 @@ lambda-case clause @var{clause}."
        (let* ((env (fold push-local (initial-env) syms))
               (nargs (length env)))
          (emit-assert-nargs-= asm nargs)
+         (for-each (lambda (sym idx)
+                     (when (assigned? sym)
+                       (pk 'boxing! sym)
+                       (emit-box asm idx idx 0)))
+                   syms (reverse (iota (length syms))))
          (emit-expand-sp asm (- frame-size nargs))
          (for-tail body env)))))
 

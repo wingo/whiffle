@@ -22,7 +22,6 @@
 (define (integer->char x) (%integer->char x))
 
 (define (eq? x y) (%eq? x y))
-(define (eqv? x y) (%eqv? x y))
 
 (define (string? x) (%string? x))
 
@@ -87,6 +86,11 @@
 (define (bytevector-length bv) (%bytevector-length bv))
 (define (bytevector-u8-ref bv i) (%bytevector-u8-ref bv i))
 (define (bytevector-u8-set! bv i u8) (%bytevector-u8-set! bv i u8))
+
+(define (box val) (%box val))
+(define (box? x) (%box? x))
+(define (box-ref x) (%box-ref x))
+(define (box-set! x val) (%box-set! x val))
 
 (define (write-char ch)
   (call-c-primitive "vm_write_char" ch))
@@ -248,5 +252,7 @@
   (let ((elapsed (- (current-microseconds) start)))
     (<< what ": completed in " elapsed " usec.")))
 
+(define (gc-collect)
+  (call-c-primitive/alloc "vm_gc_collect"))
 (define (gc-print-stats)
   (call-c-primitive/alloc "vm_gc_print_stats"))

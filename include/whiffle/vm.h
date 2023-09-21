@@ -698,4 +698,9 @@ static inline Value vm_gc_print_stats(struct VM vm) {
   return IMMEDIATE_TRUE;
 }
 
+static inline Value vm_gc_collect(struct VM vm) {
+  gc_collect(vm.thread->mut);
+  return IMMEDIATE_TRUE;
+}
+
 #endif // WHIFFLE_VM_H

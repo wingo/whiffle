@@ -86,7 +86,12 @@
                  vector
                  vector-length
                  vector-ref
-                 vector-set!))
+                 vector-set!
+
+                 variable?
+                 make-variable
+                 variable-ref
+                 variable-set!))
   #:use-module ((whiffle features)
                 #:select (whiffle-cond-expand))
   #:re-export
@@ -151,6 +156,11 @@
    (vector-length . %vector-length)
    (vector-ref . %vector-ref)
    (vector-set! . %vector-set!)
+
+   (variable? . %box?)
+   (make-variable . %box)
+   (variable-ref . %box-ref)
+   (variable-set! . %box-set!)
 
    (bytevector? . %bytevector?)
    (bytevector-length . %bytevector-length)
