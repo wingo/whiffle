@@ -15,21 +15,53 @@
 ;;; along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 (define-module (whiffle run)
+  #:use-module (rnrs bytevectors)
+  #:use-module (ice-9 binary-ports)
   #:use-module (ice-9 textual-ports)
   #:use-module (ice-9 match)
   #:use-module (ice-9 format)
+  #:use-module ((ice-9 threads) #:select (current-processor-count))
   #:use-module (whiffle compile)
   #:use-module (whiffle features)
   #:use-module (whiffle input)
   #:use-module (whiffle paths)
   #:export (run))
 
-(define* (spawn-and-read-output prog+args success failure)
+(define (bytevector-concatenate args)
+  (call-with-output-bytevector
+   (lambda (p)
+     (for-each (lambda (bv) (put-bytevector p bv)) args))))
+
+(define (gc-options-alist->env-str options)
+  (string-append
+   "GC_OPTIONS="
+   (string-join (map (match-lambda
+                       ((k . v) (format #f "~a=~a" k v)))
+                     options)
+                ",")))
+
+(define* (spawn-and-read-output prog+args success failure
+                                #:key echo-port gc-options)
   (match (pipe)
     ((input . output)
-     (let ((pid (spawn (car prog+args) prog+args #:output output)))
+     (let ((pid (spawn (car prog+args) prog+args
+                       #:environment
+                       ;; FIXME: Pass by --gc-option instead.
+                       (if gc-options
+                           (list (gc-options-alist->env-str gc-options))
+                           '())
+                       #:output output
+                       #:error output)))
        (close-port output)
-       (define str (get-string-all input))
+       (define str
+         (utf8->string
+          (bytevector-concatenate
+           (let lp ()
+             (match (get-bytevector-some input)
+               ((? eof-object?) '())
+               (frag
+                (when echo-port (put-bytevector echo-port frag))
+                (cons frag (lp))))))))
        (close-port input)
        (match (waitpid pid)
          ((_ . 0)
@@ -45,6 +77,11 @@
               preserve-builddir?
               (optimization-level 2) (warning-level 2)
               (gc "semi")
+              ;; Default heap size: 10 MB.
+              (heap-size #e10e6)
+              (heap-size-policy 'fixed)
+              (parallelism (current-processor-count))
+              (echo-output? #f)
               (fail (lambda (format-string . args)
                       (apply format (current-error-port) format-string args)
                       (exit 1)))
@@ -80,6 +117,7 @@
       (unless assemble?
         (let ((status (system* "make" "--no-print-directory" "-C" dir "V=0"
                                (string-append "GC_COLLECTOR=" gc)
+                               (format #f "-j~a" (current-processor-count))
                                "out")))
           (unless (zero? (status:exit-val status))
             (fail (string-append
@@ -109,7 +147,16 @@
               ((not (zero? (status:exit-val status)))
                (lambda ()
                  (fail "error when running scheme: failed (~a)\n"
-                       (status:exit-val status))))))))))
+                       (status:exit-val status))))))
+           #:gc-options `((heap-size . ,heap-size)
+                          (heap-size-policy
+                           . ,(case heap-size-policy
+                                ((fixed) 0)
+                                ((growable) 1)
+                                ((adaptive) 2)
+                                (else (error "bad policy" heap-size-policy))))
+                          (parallelism . ,parallelism))
+           #:echo-port (and echo-output? (current-output-port))))))
       (cond
        (preserve-builddir?
         (format #t "preserving builddir; build via `make -C ~a out`\n" dir))
