@@ -6,7 +6,7 @@ all: out
 
 include $(WHIPPET)embed.mk
 
-WHIFFLE_CFLAGS=-I $(WHIFFLE)include
+WHIFFLE_CFLAGS=-I $(WHIFFLE)include -foptimize-sibling-calls
 EMBEDDER_TO_GC_CFLAGS=$(WHIFFLE_CFLAGS) -include $(WHIFFLE)runtime/whiffle-gc.h
 
 out.o: out.c
