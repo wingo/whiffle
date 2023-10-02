@@ -63,7 +63,8 @@
 (define (emit-expand-sp asm slots)
   (unless (zero? slots)
     (<-code asm "  if (vm.sp - vm.thread->sp_limit < ~a) abort();\n" slots)
-    (<-code asm "  vm.sp -= ~a;\n" slots)))
+    (<-code asm "  vm.sp -= ~a;\n" slots)
+    (<-code asm "  vm_maybe_record_safepoint(vm);\n")))
 
 (define (make-label asm)
   (let ((label (asm-next-label asm)))
@@ -182,7 +183,8 @@
   (<-code asm "  vm = vm_closure_code(vm.sp[~a])(vm_trim(vm, ~a), ~a);\n"
           (1- base) (- base nargs) nargs))
 (define (emit-restore-sp asm slots)
-  (<-code asm "  vm.sp -= ~a;\n" slots))
+  (<-code asm "  vm.sp -= ~a;\n" slots)
+  (<-code asm "  vm_maybe_record_safepoint(vm);\n"))
 
 (define (emit-add asm dst a b)
   (<-code asm "  vm.sp[~a] = vm_add(vm.sp[~a], vm.sp[~a]);\n" dst a b))
@@ -1084,6 +1086,7 @@ lambda-case clause @var{clause}."
             (<-code asm "  vm = F~a(vm_trim(vm, argc - 1), 1);\n" label)
             (<-code asm "  if (argc > 1) {\n")
             (<-code asm "    vm.sp -= argc - 1;\n")
+            (<-code asm "    vm_maybe_record_safepoint(vm);\n")
             (<-code asm "    for (int i = 1; i < argc; i++)\n")
             (<-code asm "      vm.sp[argc-1-i] = vm_parse_value(vm_trim(vm, argc-i), argv[i]);\n")
             (<-code asm "    vm = vm_closure_code(vm.sp[argc-1])(vm, argc);\n")

@@ -54,6 +54,11 @@ static inline VM vm_trim(VM vm, size_t n) {
   return ((VM){vm.thread, vm.sp + n});
 }
 
+static inline void vm_maybe_record_safepoint(VM vm) {
+  if (gc_safepoint_mechanism() == GC_SAFEPOINT_MECHANISM_SIGNAL)
+    vm.thread->roots.safepoint = vm;
+}
+
 static inline Value vm_make_closure(VM vm, Code code, size_t nfree) {
   size_t bytes = sizeof(Closure) + nfree * sizeof(Value);
   Closure *ret = gc_allocate_fast(vm.thread->mut, bytes);
@@ -583,13 +588,13 @@ static void* vm_thread_proc_inner(struct gc_stack_addr *stack_base,
   thread->sp_limit = mem;
 
   thread->mut = gc_init_for_thread(stack_base, heap);
-  gc_mutator_set_roots(thread->mut, &thread->roots);
 
   // Prep the VM to have one stack slot, holding #f.
   Value *sp = thread->sp_base - 1;
   VM vm = (VM){thread, sp};
   vm.sp[0] = IMMEDIATE_FALSE;
   thread->roots.safepoint = vm;
+  gc_mutator_set_roots(thread->mut, &thread->roots);
 
   // Now that we mark our stack and have one reserved stack slot,
   // receive the thunk into the stack slot.
