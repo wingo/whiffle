@@ -759,7 +759,7 @@ lambda-case clause @var{clause}."
                       (push-local sym env))))
            (when (assigned? sym)
              (let ((dst (env-sp-offset env)))
-               (emit-box asm dst dst (1+ dst))))
+               (emit-box asm dst dst dst)))
            (push-let syms vals env)))))
 
     (define (push-fix syms vals env)
