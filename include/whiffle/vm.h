@@ -54,16 +54,29 @@ static inline VM vm_trim(VM vm, size_t n) {
   return ((VM){vm.thread, vm.sp + n});
 }
 
-static inline void vm_maybe_record_safepoint(VM vm) {
+static inline void vm_record_preemptive_safepoint(VM vm) {
   if (gc_safepoint_mechanism() == GC_SAFEPOINT_MECHANISM_SIGNAL)
     vm.thread->roots.safepoint = vm;
+}
+static inline void vm_record_cooperative_safepoint(VM vm) {
+  if (gc_safepoint_mechanism() == GC_SAFEPOINT_MECHANISM_COOPERATIVE)
+    vm.thread->roots.safepoint = vm;
+}
+
+static inline VM vm_expand_stack(VM vm, size_t slots) {
+  vm.sp -= slots;
+  if (gc_safepoint_mechanism() == GC_SAFEPOINT_MECHANISM_SIGNAL) {
+    memset(vm.sp, 0, sizeof(Value) * slots);
+    vm_record_preemptive_safepoint(vm);
+  }
+  return vm;
 }
 
 static inline Value vm_make_closure(VM vm, Code code, size_t nfree) {
   size_t bytes = sizeof(Closure) + nfree * sizeof(Value);
   Closure *ret = gc_allocate_fast(vm.thread->mut, bytes);
   if (GC_UNLIKELY(!ret)) {
-    vm.thread->roots.safepoint = vm;
+    vm_record_cooperative_safepoint(vm);
     ret = gc_allocate_slow(vm.thread->mut, bytes);
   }
   tagged_set_payload(&ret->tag, CLOSURE_TAG, nfree);
@@ -101,7 +114,7 @@ static inline Value vm_box(VM vm, Value *val_loc) {
   size_t bytes = sizeof(Box);
   Box *ret = gc_allocate_fast(vm.thread->mut, bytes);
   if (GC_UNLIKELY(!ret)) {
-    vm.thread->roots.safepoint = vm;
+    vm_record_cooperative_safepoint(vm);
     ret = gc_allocate_slow(vm.thread->mut, bytes);
   }
   tagged_set_payload(&ret->tag, BOX_TAG, 0);
@@ -155,7 +168,7 @@ static inline Value vm_cons(VM vm, Value *car_loc, Value *cdr_loc) {
   size_t bytes = sizeof(Pair);
   Pair *ret = gc_allocate_fast(vm.thread->mut, bytes);
   if (GC_UNLIKELY(!ret)) {
-    vm.thread->roots.safepoint = vm;
+    vm_record_cooperative_safepoint(vm);
     ret = gc_allocate_slow(vm.thread->mut, bytes);
   }
   tagged_set_value(&ret->tag, PAIR_TAG, *car_loc);
@@ -198,7 +211,7 @@ static inline Value vm_make_vector(VM vm, Value size, Value *init_loc) {
   size_t bytes = sizeof(Vector) + c_size * sizeof(Value);
   Vector *ret = gc_allocate_fast(vm.thread->mut, bytes);
   if (GC_UNLIKELY(!ret)) {
-    vm.thread->roots.safepoint = vm;
+    vm_record_cooperative_safepoint(vm);
     ret = gc_allocate_slow(vm.thread->mut, bytes);
   }
   tagged_set_payload(&ret->tag, VECTOR_TAG, c_size);
@@ -217,7 +230,7 @@ static inline Value vm_allocate_vector(VM vm, size_t size) {
   size_t bytes = sizeof(Vector) + size * sizeof(Value);
   Vector *ret = gc_allocate_fast(vm.thread->mut, bytes);
   if (GC_UNLIKELY(!ret)) {
-    vm.thread->roots.safepoint = vm;
+    vm_record_cooperative_safepoint(vm);
     ret = gc_allocate_slow(vm.thread->mut, bytes);
   }
   tagged_set_payload(&ret->tag, VECTOR_TAG, size);
@@ -288,7 +301,7 @@ static inline Value vm_make_bytevector(VM vm, Value *size, Value *init) {
   size_t bytes = sizeof(Bytevector) + c_size * sizeof(uint8_t);
   Bytevector *ret = gc_allocate_fast(vm.thread->mut, bytes);
   if (GC_UNLIKELY(!ret)) {
-    vm.thread->roots.safepoint = vm;
+    vm_record_cooperative_safepoint(vm);
     ret = gc_allocate_slow(vm.thread->mut, bytes);
   }
   tagged_set_payload(&ret->tag, BYTEVECTOR_TAG, c_size);
@@ -332,7 +345,7 @@ static inline void vm_bytevector_u8_set(Value bytevector, Value idx, Value val) 
 
 static inline Value vm_make_ephemeron(VM vm, Value *key_loc, Value *value_loc) {
   if (!is_heap_object(*key_loc)) abort();
-  vm.thread->roots.safepoint = vm;
+  vm_record_cooperative_safepoint(vm);
   Ephemeron *ret = gc_allocate_ephemeron(vm.thread->mut);
   tagged_set_payload((Tagged*)ret, EPHEMERON_TAG, 0);
   gc_ephemeron_init(vm.thread->mut, ret,
@@ -381,7 +394,7 @@ static inline Value vm_make_ephemeron_table(VM vm, Value *size_loc) {
   size_t bytes = sizeof(EphemeronTable) + c_size * sizeof(Value);
   EphemeronTable *ret = gc_allocate_fast(vm.thread->mut, bytes);
   if (GC_UNLIKELY(!ret)) {
-    vm.thread->roots.safepoint = vm;
+    vm_record_cooperative_safepoint(vm);
     ret = gc_allocate_slow(vm.thread->mut, bytes);
   }
   tagged_set_payload(&ret->tag, EPHEMERON_TABLE_TAG, c_size);
@@ -645,7 +658,7 @@ static void* vm_spawn_thread_without_gc(void *data) {
 static inline Value vm_spawn_thread(struct VM vm, Value *thunk) {
   if (!is_closure(*thunk)) abort();
 
-  vm.thread->roots.safepoint = vm;
+  vm_record_cooperative_safepoint(vm);
 
   Thread *thread = gc_call_without_gc(vm.thread->mut,
                                       vm_spawn_thread_without_gc,
@@ -667,7 +680,7 @@ static inline Value vm_join_thread(struct VM vm, Value *handle) {
   ThreadHandle *th = value_to_heap_object(*handle);
   Thread *thread = th->thread;
 
-  vm.thread->roots.safepoint = vm;
+  vm_record_cooperative_safepoint(vm);
   gc_call_without_gc(vm.thread->mut, vm_thread_wait_for_stopping, thread);
 
   Value ret = thread->sp_base[-1];
