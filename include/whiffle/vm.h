@@ -97,6 +97,7 @@ static inline void vm_closure_init(Value closure, size_t idx, Value val) {
 
 static inline Value vm_closure_ref(Value closure, size_t idx) {
   Closure *c = value_to_heap_object(closure);
+  if (idx >= tagged_payload(&c->tag)) abort();
   return c->free_vars[idx];
 }
 
@@ -122,12 +123,19 @@ static inline Value vm_box(VM vm, Value *val_loc) {
   return value_from_heap_object(ret);
 }
 
+static inline int is_box(Value v) {
+  return is_heap_object(v) &&
+    tagged_kind(value_to_heap_object(v)) == BOX_TAG;
+}
+
 static inline void vm_box_set(Value box, Value val) {
+  if (!is_box(box)) abort();
   Box *b = value_to_heap_object(box);
   b->val = val;
 }
 
 static inline Value vm_box_ref(Value box) {
+  if (!is_box(box)) abort();
   Box *b = value_to_heap_object(box);
   return b->val;
 }
