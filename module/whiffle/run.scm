@@ -73,6 +73,7 @@
               ;; Default heap size: 10 MB.
               (heap-size #e10e6)
               (heap-size-policy 'fixed)
+              (print-stats? #f)
               (parallelism (current-processor-count))
               (echo-output? #f)
               (fail (lambda (format-string . args)
@@ -126,6 +127,10 @@
                 ((adaptive) 2)
                 (else (error "bad policy" heap-size-policy))))
           (parallelism . ,parallelism)))
+      (define (add-print-stats args)
+        (if print-stats? (cons "--print-stats" args) args))
+      (define (add-gc-options args)
+        (cons* "--gc-options" (gc-options-alist->str gc-options) args))
       (define k
         (cond
          (output-file
@@ -134,8 +139,7 @@
          (else
           (spawn-and-read-output
            (cons (in-vicinity dir "out")
-                 (cons* "--gc-options" (gc-options-alist->str gc-options)
-                        (map object->string args)))
+                 (add-gc-options (add-print-stats (map object->string args))))
            (lambda (output) (lambda () output))
            (lambda (output status)
              (put-string (current-output-port) output)

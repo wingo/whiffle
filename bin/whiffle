@@ -49,6 +49,7 @@ exec "${GUILE:-guile}" "$0" "$@"
     (format port "    --gc=GC              choose gc implementation; see --gc=help\n")
     (format port "    --heap-size=SZ       specify initial heap size\n")
     (format port "    --heap-size-policy=P how to size heap: fixed, growable, or adaptive\n")
+    (format port "    --print-stats        print statistics after the run\n")
     (format port "    --preserve-builddir  keep the build directory around\n")
     (format port "    --optimize/-O LEVEL  optimize at level LEVEL; default is 2\n")
     (format port "    --warn/-W LEVEL      warn at level LEVEL; default is 2\n")
@@ -66,6 +67,7 @@ exec "${GUILE:-guile}" "$0" "$@"
                    (gc (value #t))
                    (heap-size (value #t))
                    (heap-size-policy (value #t))
+                   (print-stats (value #f))
                    (output (single-char #\o) (value #t))
                    (check-heap-consistency (value #f)))))
   (when (option-ref options 'help #f)
@@ -133,6 +135,8 @@ exec "${GUILE:-guile}" "$0" "$@"
       (case p
         ((fixed growable adaptive) p)
         (else (error "unexpected heap size policy" p)))))
+  (define print-stats?
+    (option-ref options 'print-stats #f))
   (define check-heap-consistency?
     (option-ref options 'check-heap-consistency #f))
   (when (equal? gc "help")
@@ -155,17 +159,17 @@ exec "${GUILE:-guile}" "$0" "$@"
     (format #t "  heap-conservative-parallel-generational-whippet\n")
     (format #t "                         combinations of the above\n")
     (exit 0))
-  (define result-str
-    (run #:input in-port #:output-file out-file #:assemble? assemble?
-         #:args (parse-args args-to-scheme)
-         #:optimization-level optimization-level
-         #:warning-level warning-level
-         #:gc gc
-         #:heap-size heap-size
-         #:heap-size-policy heap-size-policy
-         #:preserve-builddir? preserve-builddir?
-         #:check-heap-consistency? check-heap-consistency?))
-  (display result-str)
+  (run #:input in-port #:output-file out-file #:assemble? assemble?
+       #:args (parse-args args-to-scheme)
+       #:optimization-level optimization-level
+       #:warning-level warning-level
+       #:gc gc
+       #:heap-size heap-size
+       #:heap-size-policy heap-size-policy
+       #:preserve-builddir? preserve-builddir?
+       #:print-stats? print-stats?
+       #:echo-output? #t
+       #:check-heap-consistency? check-heap-consistency?)
   (exit 0))
 
 (when (batch-mode?)
