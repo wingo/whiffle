@@ -32,24 +32,17 @@
    (lambda (p)
      (for-each (lambda (bv) (put-bytevector p bv)) args))))
 
-(define (gc-options-alist->env-str options)
-  (string-append
-   "GC_OPTIONS="
-   (string-join (map (match-lambda
-                       ((k . v) (format #f "~a=~a" k v)))
-                     options)
-                ",")))
+(define (gc-options-alist->str options)
+  (string-join (map (match-lambda
+                      ((k . v) (format #f "~a=~a" k v)))
+                    options)
+               ","))
 
 (define* (spawn-and-read-output prog+args success failure
-                                #:key echo-port gc-options)
+                                #:key echo-port)
   (match (pipe)
     ((input . output)
      (let ((pid (spawn (car prog+args) prog+args
-                       #:environment
-                       ;; FIXME: Pass by --gc-option instead.
-                       (if gc-options
-                           (list (gc-options-alist->env-str gc-options))
-                           '())
                        #:output output
                        #:error output)))
        (close-port output)
@@ -124,6 +117,15 @@
                    "error: failed to compile generated C; leaving temp dir ~a\n"
                    "error: try again via `make -C ~a out\n")
                   dir dir))))
+      (define gc-options
+        `((heap-size . ,heap-size)
+          (heap-size-policy
+           . ,(case heap-size-policy
+                ((fixed) 0)
+                ((growable) 1)
+                ((adaptive) 2)
+                (else (error "bad policy" heap-size-policy))))
+          (parallelism . ,parallelism)))
       (define k
         (cond
          (output-file
@@ -131,7 +133,9 @@
           (lambda () ""))
          (else
           (spawn-and-read-output
-           (cons (in-vicinity dir "out") (map object->string args))
+           (cons (in-vicinity dir "out")
+                 (cons* "--gc-options" (gc-options-alist->str gc-options)
+                        (map object->string args)))
            (lambda (output) (lambda () output))
            (lambda (output status)
              (put-string (current-output-port) output)
@@ -148,14 +152,6 @@
                (lambda ()
                  (fail "error when running scheme: failed (~a)\n"
                        (status:exit-val status))))))
-           #:gc-options `((heap-size . ,heap-size)
-                          (heap-size-policy
-                           . ,(case heap-size-policy
-                                ((fixed) 0)
-                                ((growable) 1)
-                                ((adaptive) 2)
-                                (else (error "bad policy" heap-size-policy))))
-                          (parallelism . ,parallelism))
            #:echo-port (and echo-output? (current-output-port))))))
       (cond
        (preserve-builddir?

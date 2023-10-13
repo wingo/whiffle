@@ -46,7 +46,9 @@ exec "${GUILE:-guile}" "$0" "$@"
     (format port "    --help/-h            print this help message\n")
     (format port "    --output/-o FILE     just compile the input, and write to FILE\n")
     (format port "    --assemble/-S        only produce C file; don't make an executable\n")
-    (format port "    --gc=GC              choose gc implementation; see --gc=helpa\n")
+    (format port "    --gc=GC              choose gc implementation; see --gc=help\n")
+    (format port "    --heap-size=SZ       specify initial heap size\n")
+    (format port "    --heap-size-policy=P how to size heap: fixed, growable, or adaptive\n")
     (format port "    --preserve-builddir  keep the build directory around\n")
     (format port "    --optimize/-O LEVEL  optimize at level LEVEL; default is 2\n")
     (format port "    --warn/-W LEVEL      warn at level LEVEL; default is 2\n")
@@ -62,6 +64,8 @@ exec "${GUILE:-guile}" "$0" "$@"
                    (optimize (single-char #\O) (value #t))
                    (warn (single-char #\W) (value #t))
                    (gc (value #t))
+                   (heap-size (value #t))
+                   (heap-size-policy (value #t))
                    (output (single-char #\o) (value #t))
                    (check-heap-consistency (value #f)))))
   (when (option-ref options 'help #f)
@@ -105,6 +109,30 @@ exec "${GUILE:-guile}" "$0" "$@"
         (error "unexpected warning level")))
   (define gc
     (option-ref options 'gc "semi"))
+  (define (string->size* s)
+    (let ((n (string->number s)))
+      (or (and n (real? n) (positive? n)
+               (inexact->exact (round n)))
+          (error "expected size" s))))
+  (define (string->size s)
+    (let lp ((suffixes '(("k" . #e1e3)
+                         ("m" . #e1e6)
+                         ("g" . #e1e9))))
+      (match suffixes
+        (((suffix . multiplier) . suffixes)
+         (if (string-suffix? suffix s)
+             (let ((s (substring s 0 (- (string-length s)
+                                        (string-length suffix)))))
+               (* multiplier (string->size* s)))
+             (lp suffixes)))
+        (() (string->size* s)))))
+  (define heap-size
+    (string->size (option-ref options 'heap-size "10e6")))
+  (define heap-size-policy
+    (let ((p (string->symbol (option-ref options 'heap-size-policy "fixed"))))
+      (case p
+        ((fixed growable adaptive) p)
+        (else (error "unexpected heap size policy" p)))))
   (define check-heap-consistency?
     (option-ref options 'check-heap-consistency #f))
   (when (equal? gc "help")
@@ -133,6 +161,8 @@ exec "${GUILE:-guile}" "$0" "$@"
          #:optimization-level optimization-level
          #:warning-level warning-level
          #:gc gc
+         #:heap-size heap-size
+         #:heap-size-policy heap-size-policy
          #:preserve-builddir? preserve-builddir?
          #:check-heap-consistency? check-heap-consistency?))
   (display result-str)

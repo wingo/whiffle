@@ -17,37 +17,100 @@
 static inline intptr_t fixnum_value(Value v) { return value_to_fixnum(v); }
 static inline Value make_fixnum(intptr_t v) { return value_from_fixnum(v); }
 
-static VM vm_prepare_main_thread(Thread *thread, size_t initial_nargs) {
+struct vm_options {
+  int print_stats;
+  char *gc_options;
+};
+
+struct vm_process {
+  struct vm_options options;
+  struct timeval start;
+};
+
+static void vm_usage(FILE *f, char *arg0) {
+  fprintf(f, "usage: %s [--print-stats] [--gc-options OPTIONS] ARG...\n",
+          arg0);
+}
+
+static void vm_parse_options(struct vm_options *options, int *argc_p,
+                             char ***argv_p) {
+  memset(options, 0, sizeof(*options));
+  int argc = *argc_p;
+  char **argv = *argv_p;
+  if (argc == 0) {
+    vm_usage(stderr, "[missing argv[0]]");
+    exit(1);
+  }
+  char *arg0 = argv[0];
+  argc--, argv++;
+  options->gc_options = getenv("GC_OPTIONS");
+  for (; argc && *argv[0] == '-'; argc--, argv++) {
+    char *arg = argv[0];
+    if (argc > 1 && !strcmp(arg, "--gc-options")) {
+      options->gc_options = argv[1];
+      argc--, argv++;
+    } else if (!strcmp(arg, "--print-stats")) {
+      options->print_stats = 1;
+    } else if (!strcmp(arg, "--help") || !strcmp(arg, "-h")) {
+      vm_usage(stdout, arg0);
+      exit(0);
+    } else {
+      vm_usage(stderr, arg0);
+      exit(1);
+    }
+  }
+  *argc_p = argc;
+  *argv_p = argv;
+}
+
+static VM vm_prepare_process(struct vm_process *process,
+                             Thread *thread,
+                             int *argc_p, char ***argv_p) {
+  vm_parse_options(&process->options, argc_p, argv_p);
+
   size_t bytes = 2 * 1024 * 1024;
-  if (initial_nargs > bytes / sizeof(Value)) abort();
   void *mem = mmap(NULL, bytes, PROT_READ|PROT_WRITE,
                    MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
   if (mem == MAP_FAILED) {
     perror("allocating thread stack failed");
-    GC_CRASH();
+    exit(1);
   }
   thread->sp_base = (Value*)(((char *)mem) + bytes);
   thread->sp_limit = mem;
   struct gc_options *options = gc_allocate_options();
-  char *options_str = getenv("GC_OPTIONS");
+  char *options_str = process->options.gc_options;
   if (options_str) {
     if (!gc_options_parse_and_set_many(options, options_str)) {
       fprintf(stderr, "failed to set options: %s\n", options_str);
-      GC_CRASH();
+      exit(1);
     }
   }
   if (!gc_init(options, NULL, &thread->heap, &thread->mut))
     GC_CRASH();
 
   gc_mutator_set_roots(thread->mut, &thread->roots);
-  Value *sp = thread->sp_base - initial_nargs;
-  VM vm = (VM){thread, sp};
+  VM vm = (VM){thread, thread->sp_base};
   thread->roots.safepoint = vm;
 
   memset(&thread->extern_space, 0, sizeof(thread->extern_space));
   gc_heap_set_extern_space(thread->heap, &thread->extern_space);
 
+  if (gettimeofday(&process->start, NULL) == -1) abort();
+
   return vm;
+}
+
+static int vm_finish_process(Thread *thread, struct vm_process *process) {
+  if (process->options.print_stats) {
+    struct timeval end;
+    if (gettimeofday(&end, NULL) == -1) abort();
+    unsigned long usec = 1000 * 1000;
+    unsigned long elapsed = (end.tv_sec - process->start.tv_sec) * usec;
+    elapsed += end.tv_usec;
+    elapsed -= process->start.tv_usec;
+    fprintf(stdout, "\n%lu.%.3lu\n", elapsed / usec, elapsed % usec);
+  }
+  return 0;
 }
 
 static inline VM vm_trim(VM vm, size_t n) {
