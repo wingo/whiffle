@@ -97,16 +97,14 @@
     (define (run-configurations)
       (fold
        (lambda (collector results)
-         (let lp ((nthreads 1) (results results))
-           (if (<= nthreads max-threads)
-               (lp (1+ nthreads)
-                   (let lp ((parallelism 1) (results results))
-                     (if (<= parallelism max-parallelism)
-                         (lp (1+ parallelism)
-                             (run-configuration collector nthreads parallelism
-                                                results))
-                         results)))
-               results)))
+         (fold (lambda (config results)
+                 (match config
+                   ((nthreads parallelism)
+                    (run-configuration collector nthreads parallelism
+                                       results))))
+               results `((1 1)
+                         (1 ,max-parallelism)
+                         (,max-threads ,max-parallelism))))
        #(() () ())
        *all-collectors*))
     (match (run-configurations)
