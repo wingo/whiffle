@@ -51,6 +51,8 @@ static VM vm_prepare_main_thread(Thread *thread, size_t initial_nargs) {
 }
 
 static inline VM vm_trim(VM vm, size_t n) {
+  if (GC_DEBUG)
+    memset(vm.sp, 0, sizeof(Value) * n);
   return ((VM){vm.thread, vm.sp + n});
 }
 
