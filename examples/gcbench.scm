@@ -137,7 +137,4 @@
   #t)
 
 (lambda (nthreads)
-  (let ((start (current-microseconds)))
-    (parallel nthreads (lambda (i) (run-test i)))
-    (print-elapsed "gcbench" start)
-    (gc-print-stats)))
+  (parallel nthreads (lambda (i) (run-test i))))

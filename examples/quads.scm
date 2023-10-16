@@ -50,9 +50,6 @@
     (print-elapsed "quads test" start)))
 
 (lambda (nthreads depth)
-  (let ((start (current-microseconds)))
-    (parallel nthreads
-              (lambda (i)
-                (run-test i depth)))
-    (print-elapsed "test" start)
-    (gc-print-stats)))
+  (parallel nthreads
+            (lambda (i)
+              (run-test i depth))))

@@ -68,9 +68,6 @@
     (print-elapsed "thread" start)))
 
 (lambda (nthreads chain-length)
-  (let ((start (current-microseconds)))
-    (parallel nthreads
-              (lambda (i)
-                (run-test i chain-length)))
-    (print-elapsed "test" start)
-    (gc-print-stats)))
+  (parallel nthreads
+            (lambda (i)
+              (run-test i chain-length))))

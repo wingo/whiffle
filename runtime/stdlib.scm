@@ -254,5 +254,3 @@
 
 (define (gc-collect)
   (call-c-primitive/alloc "vm_gc_collect"))
-(define (gc-print-stats)
-  (call-c-primitive/alloc "vm_gc_print_stats"))

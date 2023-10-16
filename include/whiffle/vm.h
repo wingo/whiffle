@@ -10,6 +10,7 @@
 #include <sys/time.h>
 
 #include <gc-api.h>
+#include <gc-basic-stats.h>
 #include <gc-ephemeron.h>
 
 #include "types.h"
@@ -24,7 +25,7 @@ struct vm_options {
 
 struct vm_process {
   struct vm_options options;
-  struct timeval start;
+  struct gc_basic_stats stats;
 };
 
 static void vm_usage(FILE *f, char *arg0) {
@@ -34,7 +35,6 @@ static void vm_usage(FILE *f, char *arg0) {
 
 static void vm_parse_options(struct vm_options *options, int *argc_p,
                              char ***argv_p) {
-  memset(options, 0, sizeof(*options));
   int argc = *argc_p;
   char **argv = *argv_p;
   if (argc == 0) {
@@ -66,6 +66,7 @@ static void vm_parse_options(struct vm_options *options, int *argc_p,
 static VM vm_prepare_process(struct vm_process *process,
                              Thread *thread,
                              int *argc_p, char ***argv_p) {
+  memset(process, 0, sizeof(*process));
   vm_parse_options(&process->options, argc_p, argv_p);
 
   size_t bytes = 2 * 1024 * 1024;
@@ -85,7 +86,8 @@ static VM vm_prepare_process(struct vm_process *process,
       exit(1);
     }
   }
-  if (!gc_init(options, NULL, &thread->heap, &thread->mut))
+  if (!gc_init(options, NULL, &thread->heap, &thread->mut,
+               GC_BASIC_STATS, &process->stats))
     GC_CRASH();
 
   gc_mutator_set_roots(thread->mut, &thread->roots);
@@ -95,21 +97,14 @@ static VM vm_prepare_process(struct vm_process *process,
   memset(&thread->extern_space, 0, sizeof(thread->extern_space));
   gc_heap_set_extern_space(thread->heap, &thread->extern_space);
 
-  if (gettimeofday(&process->start, NULL) == -1) abort();
-
   return vm;
 }
 
 static int vm_finish_process(Thread *thread, struct vm_process *process) {
-  if (process->options.print_stats) {
-    struct timeval end;
-    if (gettimeofday(&end, NULL) == -1) abort();
-    unsigned long usec = 1000 * 1000;
-    unsigned long elapsed = (end.tv_sec - process->start.tv_sec) * usec;
-    elapsed += end.tv_usec;
-    elapsed -= process->start.tv_usec;
-    fprintf(stdout, "\n%lu.%.3lu\n", elapsed / usec, elapsed % usec);
-  }
+  gc_basic_stats_finish(&process->stats);
+  if (process->options.print_stats)
+    // TODO: Print a Scheme datum.
+    gc_basic_stats_print(&process->stats, stdout);
   return 0;
 }
 
@@ -782,11 +777,6 @@ static inline void vm_wrong_num_args(size_t expected, size_t actual) {
   fprintf(stderr, "wrong number of args to procedure (expected %zu, got %zu)\n",
           expected, actual);
   exit(1);
-}
-
-static inline Value vm_gc_print_stats(struct VM vm) {
-  gc_print_stats(vm.thread->heap);
-  return IMMEDIATE_TRUE;
 }
 
 static inline Value vm_gc_collect(struct VM vm) {
