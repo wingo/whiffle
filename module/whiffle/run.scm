@@ -39,12 +39,12 @@
                ","))
 
 (define* (spawn-and-read-output prog+args success failure
-                                #:key echo-port)
+                                #:key echo-output echo-error)
   (match (pipe)
     ((input . output)
      (let ((pid (spawn (car prog+args) prog+args
                        #:output output
-                       #:error output)))
+                       #:error (or echo-error output))))
        (close-port output)
        (define str
          (utf8->string
@@ -53,7 +53,7 @@
              (match (get-bytevector-some input)
                ((? eof-object?) '())
                (frag
-                (when echo-port (put-bytevector echo-port frag))
+                (when echo-output (put-bytevector echo-output frag))
                 (cons frag (lp))))))))
        (close-port input)
        (match (waitpid pid)
@@ -76,6 +76,7 @@
               (print-stats? #f)
               (parallelism (current-processor-count))
               (echo-output? #f)
+              (echo-error? #f)
               (fail (lambda (format-string . args)
                       (apply format (current-error-port) format-string args)
                       (exit 1)))
@@ -156,7 +157,8 @@
                (lambda ()
                  (fail "error when running scheme: failed (~a)\n"
                        (status:exit-val status))))))
-           #:echo-port (and echo-output? (current-output-port))))))
+           #:echo-output (and echo-output? (current-output-port))
+           #:echo-error (and echo-error? (current-error-port))))))
       (cond
        (preserve-builddir?
         (format #t "preserving builddir; build via `make -C ~a out`\n" dir))

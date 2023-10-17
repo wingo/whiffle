@@ -37,7 +37,9 @@
   (check-equal (call-with-values (lambda () (primitive-eval expr))
                  list)
                (parse-output
-                (run #:expr `(write ',expr))))
+                (run #:expr `(write ',expr)
+                     #:echo-error? #t
+                     #:parallelism 1)))
   (format #t " ok.\n"))
 
 (define (check-exprs exprs)

@@ -22,11 +22,20 @@
   (unless (equal? expected actual)
     (error (format #f "expected ~s, got ~s" expected actual))))
 
+(define (wrap-whiffle-expr-for-guile expr)
+  `(let ()
+     ;; Here define any whiffle primitives that aren't defined in a
+     ;; normal Guile environment.
+     (define (writeln x)   (write x)   (newline))
+     (define (displayln x) (display x) (newline))
+     (let ()
+       ,expr)))
+
 (define (load-in-fresh-module filename)
   (save-module-excursion
    (lambda ()
      (set-current-module (make-fresh-user-module))
-     (primitive-load filename))))
+     (primitive-eval (wrap-whiffle-expr-for-guile `(include ,filename))))))
 
 (define (read-values port)
   (let ((datum (read port)))
@@ -47,7 +56,9 @@
                     (lambda () (apply (load-in-fresh-module filename) args))))
                  (parse-output
                   (run #:input (open-input-file filename)
-                       #:args args))))
+                       #:args args
+                       #:echo-error? #t
+                       #:parallelism 1))))
   (format #t " ok.\n"))
 
 (check-run "peano-fib.scm" 25)
