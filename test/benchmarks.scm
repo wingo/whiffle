@@ -123,8 +123,16 @@
 (run-benchmark "gcbench.scm" '()
                #:minimum-serial-heap-size #e20e6
                #:heap-size-multiplier 2.5)
-;(check-run "quads.scm" (current-processor-count) 10)
-;(check-run "ephemerons.scm" (current-processor-count) 200000)
+(run-benchmark "quads.scm" '(10)
+               #:minimum-serial-heap-size #e65e6
+               #:heap-size-multiplier 2.5)
+(run-benchmark "ephemerons.scm" '(500000)
+               #:minimum-serial-heap-size #e40e6
+               #:heap-size-multiplier 2.5
+               #:collector-filter
+               (lambda (collector nthreads parallelism)
+                 (and (not (eq? collector 'bdw))
+                      (default-collector-filter collector nthreads parallelism))))
 
 (format #t "All tests passed.\n")
 (exit 0)
