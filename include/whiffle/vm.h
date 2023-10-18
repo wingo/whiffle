@@ -793,7 +793,7 @@ static inline void vm_wrong_num_args(size_t expected, size_t actual) {
 }
 
 static inline Value vm_gc_collect(struct VM vm) {
-  gc_collect(vm.thread->mut);
+  gc_collect(vm.thread->mut, GC_COLLECTION_MAJOR);
   return IMMEDIATE_TRUE;
 }
 
