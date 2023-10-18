@@ -152,6 +152,9 @@ static inline Value vm_make_closure(VM vm, Code code, size_t nfree) {
 
 static inline void vm_closure_init(Value closure, size_t idx, Value val) {
   Closure *c = value_to_heap_object(closure);
+  size_t size = tagged_payload(&c->tag);
+  gc_write_barrier(gc_ref_from_heap_object(c), sizeof(*c) + sizeof(Value)*size,
+                   gc_edge(&c->free_vars[idx]), gc_ref(val.payload));
   c->free_vars[idx] = val;
 }
 
