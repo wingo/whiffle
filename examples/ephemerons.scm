@@ -57,12 +57,12 @@
          (chain (make-ephemeron-chain chain-length head-key-box)))
     (assert-eq! (ephemeron-chain-length chain head-key-box)
                 chain-length)
-    (pk 'herro)
     (gc-collect)
     (assert-eq! (ephemeron-chain-length chain head-key-box) chain-length)
-    (pk 'ahoyyyyy)
     (when-precise-gc
      (box-set! head-key-box #f)
+     ;; Assume that gc-collect forces major collections, otherwise the
+     ;; key may still be live.
      (gc-collect)
      (assert-eq! (ephemeron-chain-length chain head-key-box) 0))
     (print-elapsed "thread" start)))
