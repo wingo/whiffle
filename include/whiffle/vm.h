@@ -102,9 +102,13 @@ static VM vm_prepare_process(struct vm_process *process,
 
 static int vm_finish_process(Thread *thread, struct vm_process *process) {
   gc_basic_stats_finish(&process->stats);
-  if (process->options.print_stats)
+  if (process->options.print_stats) {
     // TODO: Print a Scheme datum.
     gc_basic_stats_print(&process->stats, stdout);
+    fprintf(stdout, "#(%f %f)\n",
+            (double) process->stats.elapsed_mutator_usec * 1e-6,
+            (double) process->stats.elapsed_collector_usec * 1e-6);
+  }
   return 0;
 }
 
