@@ -128,11 +128,7 @@
                #:heap-size-multiplier 2.5)
 (run-benchmark "ephemerons.scm" '(500000)
                #:minimum-serial-heap-size #e40e6
-               #:heap-size-multiplier 2.5
-               #:collector-filter
-               (lambda (collector nthreads parallelism)
-                 (and (not (eq? collector 'bdw))
-                      (default-collector-filter collector nthreads parallelism))))
+               #:heap-size-multiplier 2.5)
 
 (format #t "All tests passed.\n")
 (exit 0)
