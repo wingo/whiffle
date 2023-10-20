@@ -43,6 +43,12 @@
    ((string-contains (symbol->string collector) "parallel") #t)
    (else (eq? parallelism 1))))
 
+(define (last-line s)
+  (let* ((s (string-trim-right s)))
+    (match (string-index-right s #\newline)
+      (#f s)
+      (pos (substring s pos)))))
+
 (define* (run-benchmark benchmark args
                         #:key
                         (max-threads (min (current-processor-count) 8))
@@ -74,16 +80,23 @@
               (lambda ()
                 (format #t " ~a:~:[ ~;\n~]" configuration echo-output?)
                 (force-output)
-                (run #:input (open-input-file filename)
-                     #:args (cons nthreads args)
-                     #:gc (symbol->string collector)
-                     #:heap-size (initial-heap-size nthreads)
-                     #:heap-size-policy heap-size-policy
-                     #:parallelism parallelism
-                     #:echo-output? echo-output?
-                     #:fail (lambda (fmt . args)
-                              (abort-to-prompt tag fmt args)))
-                (format #t "~:[~; ~a: ~]pass\n" echo-output? configuration)
+                (define output
+                  (run #:input (open-input-file filename)
+                       #:args (cons nthreads args)
+                       #:gc (symbol->string collector)
+                       #:heap-size (initial-heap-size nthreads)
+                       #:heap-size-policy heap-size-policy
+                       #:parallelism parallelism
+                       #:echo-output? echo-output?
+                       #:print-stats? #t
+                       #:fail (lambda (fmt . args)
+                                (abort-to-prompt tag fmt args))))
+                (match (call-with-input-string (last-line output) read)
+                  (#(mutator-seconds collector-seconds)
+                   (format #t "~:[~*~; ~a: ~]pass: ~,3fs (~,3fs gc)\n"
+                           echo-output? configuration
+                           (+ mutator-seconds collector-seconds)
+                           collector-seconds)))
                 (force-output)
                 (vector (cons configuration pass) fail skip))
               (lambda (_ fmt args)
