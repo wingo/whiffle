@@ -23,6 +23,7 @@ exec "${GUILE:-guile}" "$0" "$@"
              (ice-9 getopt-long)
              (ice-9 match)
              (ice-9 textual-ports)
+             ((ice-9 threads) #:select (current-processor-count))
              (whiffle run))
 
 (define (parse-args args)
@@ -49,6 +50,7 @@ exec "${GUILE:-guile}" "$0" "$@"
     (format port "    --gc=GC              choose gc implementation; see --gc=help\n")
     (format port "    --heap-size=SZ       specify initial heap size\n")
     (format port "    --heap-size-policy=P how to size heap: fixed, growable, or adaptive\n")
+    (format port "    --parallelism=N      limit to number of GC threads\n")
     (format port "    --print-stats        print statistics after the run\n")
     (format port "    --preserve-builddir  keep the build directory around\n")
     (format port "    --optimize/-O LEVEL  optimize at level LEVEL; default is 2\n")
@@ -67,6 +69,7 @@ exec "${GUILE:-guile}" "$0" "$@"
                    (gc (value #t))
                    (heap-size (value #t))
                    (heap-size-policy (value #t))
+                   (parallelism (value #t))
                    (print-stats (value #f))
                    (output (single-char #\o) (value #t))
                    (check-heap-consistency (value #f)))))
@@ -111,6 +114,11 @@ exec "${GUILE:-guile}" "$0" "$@"
         (error "unexpected warning level")))
   (define gc
     (option-ref options 'gc "semi"))
+  (define (string->count s)
+    (let ((n (string->number s)))
+      (unless (and (exact-integer? n) (positive? n))
+        (error "expected positive exact integer" n))
+      n))
   (define (string->size* s)
     (let ((n (string->number s)))
       (or (and n (real? n) (positive? n)
@@ -135,6 +143,10 @@ exec "${GUILE:-guile}" "$0" "$@"
       (case p
         ((fixed growable adaptive) p)
         (else (error "unexpected heap size policy" p)))))
+  (define parallelism
+    (cond
+     ((option-ref options 'parallelism #f) => string->count)
+     (else (min (current-processor-count) 8))))
   (define print-stats?
     (option-ref options 'print-stats #f))
   (define check-heap-consistency?
@@ -166,6 +178,7 @@ exec "${GUILE:-guile}" "$0" "$@"
        #:gc gc
        #:heap-size heap-size
        #:heap-size-policy heap-size-policy
+       #:parallelism parallelism
        #:preserve-builddir? preserve-builddir?
        #:print-stats? print-stats?
        #:echo-output? #t

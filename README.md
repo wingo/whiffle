@@ -57,28 +57,95 @@ $ ./foo
 42
 ```
 
-But, thing is---I don't like to document rough edges, but here we
-are---thing is, Whiffle's GC library,
-[Whippet](https://github.com/wingo/whippet), includes a number of
-concrete garbage collectors, and the default one that Whiffle uses is
-`semi`, a simple semi-space collector.  These collectors are
-parameterized by
-[options](https://github.com/wingo/whippet/blob/main/doc/manual.md#options).
-One of the options is `parallelism`, which defaults to the number of
-cores available.  But `semi` only supports 1 core, currently; it will
-bail if the `parallelism` option is not 1.  So you need to set
-`parallelism` to 1.  Whiffle passes options to Whippet via the
-`GC_OPTIONS` environment variable, so run like this:
+The resulting binary has some standard command-line options:
 
 ```
-$ GC_OPTIONS=parallelism=1 ./out
+$ ./foo --help
+usage: ./foo [--print-stats] [--gc-options OPTIONS] ARG...
+```
+
+For example, we can print some statistics:
+
+```
+$ ./foo --print-stats
 42
+Completed 0 major collections (0 minor).
+0.083 ms total time (0.000 stopped).
+Heap size is 6.291 MB (max 6.291 MB); peak live data 0.000 MB.
+```
+
+Whiffle's GC library, [Whippet](https://github.com/wingo/whippet),
+includes a number of concrete garbage collectors.  The choice of which
+collector to use is made at build-time:
+
+```
+$ ./pre-inst-env whiffle -o foo -e '(write 42)' --gc=help
+available GC implementations:
+  semi                   serial copying
+  bdw                    third-party BDW-GC parallel mark-sweep
+  whippet                serial immix
+  generational-whippet   whippet + in-place generations
+  parallel-whippet       whippet + parallel tracing
+  stack-conservative-whippet
+                         whippet + conservative stack root finding
+  heap-conservative-whippet
+                         stack-conservative-whippet + conservative heap edges
+  stack-conservative-parallel-whippet
+  heap-conservative-parallel-whippet
+  stack-conservative-generational-whippet
+  heap-conservative-generational-whippet
+  parallel-generational-whippet
+  stack-conservative-parallel-generational-whippet
+  heap-conservative-parallel-generational-whippet
+                         combinations of the above
+```
+
+The default collector is `semi`.  The collectors are also parameterized
+by run-time
+[options](https://github.com/wingo/whippet/blob/main/doc/manual.md#options).
+To set options, pass the `--gc-options` argument:
+
+```
+$ ./foo --print-stats --gc-options heap-size=100m
+warning: parallelism unimplemented in semispace copying collector
+42
+Completed 0 major collections (0 minor).
+0.050 ms total time (0.000 stopped).
+Heap size is 104.858 MB (max 104.858 MB); peak live data 0.000 MB.
+```
+For example
+
+One of the options is `parallelism`, which defaults to the number of
+cores available.  But `semi` only supports 1 core, currently; it will
+warn if the `parallelism` option is not 1.  (We have been omitting the
+warning from the output above, except in this latest example.)  So if
+you want to avoid the warning you can pass `parallelism=1` as an option:
+
+```
+$ ./foo --print-stats --gc-options heap-size=100m,parallelism=1
+42
+Completed 0 major collections (0 minor).
+0.065 ms total time (0.000 stopped).
+Heap size is 104.858 MB (max 104.858 MB); peak live data 0.000 MB.
 ```
 
 Whiffle can compile files instead of expressions:
 
 ```
-$ GC_OPTIONS=parallelism=1 ./pre-inst-env whiffle examples/peano-fib.scm 25
+$ ./pre-inst-env whiffle examples/peano-fib.scm 25
+warning: parallelism unimplemented in semispace copying collector
+121393
+```
+
+Here we see that we got the semi parallelism warning.  When we use
+whiffle to evaluate a file or expression directly instead of reifying a
+binary, we can pass some command-line arguments to set relevant GC
+options: `--parallelism` for a limit to the number of GC threads,
+`--heap-size` for heap size, and `--heap-size-policy` to request a
+fixed, growable, or adaptive heap size policy:
+
+```
+$ ./pre-inst-env whiffle --parallelism=1 examples/peano-fib.scm 25
 121393
 ```
 
