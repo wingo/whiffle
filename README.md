@@ -9,7 +9,22 @@ garbage collectors.  See the [design document](./doc/design.md), for more.
 
 ## Using Whiffle
 
-Before starting, maybe you want to compile the Whiffle compiler:
+Whiffle itself has three dependencies: [Guile
+3.0.10](https://gnu.org/s/guile), `make`, and a C compiler.  As of late
+October 2023, Guile 3.0.10 is not released yet, so you need a build from
+git.  Additionally if you want to support the
+[BDW-GC](https://github.com/ivmai/bdwgc) collector implementation, you
+will need bdw-gc and pkg-config.
+
+The easiest way to get the dependencies is via
+[Guix](https://guix.gnu.org/):
+
+```
+$ guix shell
+```
+
+This command will put you in a shell that has everything you need.
+Then, probably you want to compile the Whiffle compiler:
 
 ```
 $ make
@@ -18,21 +33,21 @@ $ make
 
 You don't have to do this, but things run faster this way.
 
-Whiffle itself has three dependencies: [Guile
-3.0](https://gnu.org/s/guile), make, and a C compiler.  It embeds a copy
-of [Whippet](https://github.com/wingo/whippet), a portable garbage
-collector implementation.  (Testing Whippet is the purpose of Whiffle.)
-The Whippet GC currently only works on Linux systems, but this will be
-fixed to include MacOS and Windows soonish.  Other OS implementations
-are welcome but they should go through the Whippet project first.
+If you don't want to enter a Guix shell, prefix the commands below with
+`guix shell -Df guix.scm --`, like this:
 
-Right now the Whiffle paradigm is, you have to compile a function: the
-root expression of your compilation must be a `lambda`.  The compiled
-program will take its arguments from the command line.  This way you can
-be sure that any input to the benchmark (because Whiffle is used to make
-benchmarks) is not part of the compilation unit of the benchmark itself.
+```
+$ guix shell -Df guix.scm -- make
+```
 
-So one example is to compile a function to C, then run the compiled
+Whiffle embeds a copy of [Whippet](https://github.com/wingo/whippet), a
+portable garbage collector implementation.  (Testing Whippet is the
+purpose of Whiffle.)  The Whippet GC currently only works on Linux
+systems, but this will be fixed to include MacOS and Windows soonish.
+Other OS implementations are welcome but they should go through the
+Whippet project first.
+
+So one example is to compile an expression to C, then run the compiled
 file:
 
 ```
@@ -158,5 +173,10 @@ Maybe you want to choose a different GC?  Pass `--gc`:
 $ ./pre-inst-env whiffle --gc=whippet examples/peano-fib.scm 25
 121393
 ```
+
+Also with the `peano-fib.scm` example, we see that we are passing an
+additional argument, `25`.  If you pass an argument to whiffle, or to a
+compiled binary, Whiffle will check that the program evaluates to a
+procedure, then applies that procedure to the arguments.
 
 See `whiffle --help` for more.
