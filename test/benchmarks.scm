@@ -64,7 +64,9 @@
                                                   heap-size-multiplier)))))
                         (collector-filter default-collector-filter)
                         (echo-output? #f))
-  (format #t "running: ~a~{ ~s~}:\n" benchmark args)
+  (format #t "running: ~a~{ ~s~}, ~,1fx heap, ~,1f MB per mutator thread:\n" benchmark args
+          heap-size-multiplier
+          (* minimum-serial-heap-size heap-size-multiplier 1e-6))
   (force-output)
   (let ((filename (whiffle-filename "examples" benchmark)))
     (define (run-configuration collector nthreads parallelism results)
