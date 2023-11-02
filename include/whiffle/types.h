@@ -103,6 +103,11 @@ enum thread_state {
   THREAD_ERROR
 };
 
+struct prng_state {
+  // xoshiro256**
+  uint64_t s[4];
+};
+
 typedef struct Thread {
   Value *sp_base;
   Value *sp_limit;
@@ -114,6 +119,7 @@ typedef struct Thread {
   pthread_mutex_t lock;
   pthread_cond_t cond;
   enum thread_state state;
+  struct prng_state prng_state;
 } Thread;
 
 static inline int is_heap_object(Value v) {

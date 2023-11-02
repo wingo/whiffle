@@ -87,6 +87,9 @@
 (define (bytevector-u8-ref bv i) (%bytevector-u8-ref bv i))
 (define (bytevector-u8-set! bv i u8) (%bytevector-u8-set! bv i u8))
 
+(define (random-fixnum!)
+  (call-c-primitive/result "vm_random_fixnum"))
+
 (define (box val) (%box val))
 (define (box? x) (%box? x))
 (define (box-ref x) (%box-ref x))

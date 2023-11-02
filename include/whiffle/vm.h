@@ -21,6 +21,7 @@ static inline Value make_fixnum(intptr_t v) { return value_from_fixnum(v); }
 struct vm_options {
   int print_stats;
   char *gc_options;
+  uint64_t prng_seed;
 };
 
 struct vm_process {
@@ -29,8 +30,34 @@ struct vm_process {
 };
 
 static void vm_usage(FILE *f, char *arg0) {
-  fprintf(f, "usage: %s [--print-stats] [--gc-options OPTIONS] ARG...\n",
+  fprintf(f, "usage: %s [--print-stats] [--seed SEED] [--gc-options OPTIONS] ARG...\n",
           arg0);
+}
+
+static inline uint64_t splitmix64(uint64_t *seed) {
+  // splitmix64 code taken from https://prng.di.unimi.it/splitmix64.c,
+  // whose copyright notice is:
+  //
+  // Written in 2015 by Sebastiano Vigna (vigna@acm.org)
+  //
+  // To the extent possible under law, the author has dedicated all
+  // copyright and related and neighboring rights to this software to
+  // the public domain worldwide. This software is distributed without
+  // any warranty.
+  //
+  // See <http://creativecommons.org/publicdomain/zero/1.0/>.
+
+  uint64_t z = (*seed += UINT64_C(0x9e3779b97f4a7c15));
+  z = (z ^ (z >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+  z = (z ^ (z >> 27)) * UINT64_C(0x94d049bb133111eb);
+  return z ^ (z >> 31);
+}
+
+static inline void vm_init_random(struct VM vm, uint64_t seed) {
+  vm.thread->prng_state.s[0] = splitmix64(&seed);
+  vm.thread->prng_state.s[1] = splitmix64(&seed);
+  vm.thread->prng_state.s[2] = splitmix64(&seed);
+  vm.thread->prng_state.s[3] = splitmix64(&seed);
 }
 
 static void vm_parse_options(struct vm_options *options, int *argc_p,
@@ -48,6 +75,9 @@ static void vm_parse_options(struct vm_options *options, int *argc_p,
     char *arg = argv[0];
     if (argc > 1 && !strcmp(arg, "--gc-options")) {
       options->gc_options = argv[1];
+      argc--, argv++;
+    } else if (argc > 1 && !strcmp(arg, "--seed")) {
+      options->prng_seed = atoll(argv[1]);
       argc--, argv++;
     } else if (!strcmp(arg, "--print-stats")) {
       options->print_stats = 1;
@@ -96,6 +126,8 @@ static VM vm_prepare_process(struct vm_process *process,
 
   memset(&thread->extern_space, 0, sizeof(thread->extern_space));
   gc_heap_set_extern_space(thread->heap, &thread->extern_space);
+
+  vm_init_random(vm, process->options.prng_seed);
 
   return vm;
 }
@@ -722,12 +754,17 @@ static void* vm_thread_proc(void *data) {
 }
 
 static void* vm_spawn_thread_without_gc(void *data) {
-  struct gc_heap *heap = data;
+  Thread *spawning_thread = data;
+  struct gc_heap *heap = spawning_thread->heap;
 
   Thread *thread = calloc(1, sizeof(Thread));
   pthread_mutex_init(&thread->lock, NULL);
   pthread_cond_init(&thread->cond, NULL);
   thread->state = THREAD_SPAWNING;
+
+  // Inherit deterministic PRNG state.
+  memcpy(&thread->prng_state, &spawning_thread->prng_state,
+         sizeof(thread->prng_state));
 
   struct vm_spawn_thread_data spawn_data = { heap, thread };
   pthread_mutex_lock(&thread->lock);
@@ -747,7 +784,7 @@ static inline Value vm_spawn_thread(struct VM vm, Value *thunk) {
 
   Thread *thread = gc_call_without_gc(vm.thread->mut,
                                       vm_spawn_thread_without_gc,
-                                      vm.thread->heap);
+                                      vm.thread);
 
   thread->sp_base[-1] = *thunk;
   thread->state = THREAD_RUNNING;
@@ -799,6 +836,45 @@ static inline void vm_wrong_num_args(size_t expected, size_t actual) {
 static inline Value vm_gc_collect(struct VM vm) {
   gc_collect(vm.thread->mut, GC_COLLECTION_MAJOR);
   return IMMEDIATE_TRUE;
+}
+
+
+static inline uint64_t rotl(const uint64_t x, int k) {
+  return (x << k) | (x >> (64 - k));
+}
+static inline uint64_t xoshiro256ss(uint64_t *s) {
+  // xoshiro256** code taken from
+  // https://prng.di.unimi.it/xoshiro256starstar.c, which has the
+  // following copyright notice:
+  //
+  // Written in 2018 by David Blackman and Sebastiano Vigna
+  // (vigna@acm.org)
+  //
+  // To the extent possible under law, the author has dedicated all
+  // copyright and related and neighboring rights to this software to
+  // the public domain worldwide. This software is distributed without
+  // any warranty.
+  //
+  // See <http://creativecommons.org/publicdomain/zero/1.0/>.
+  uint64_t result = rotl(s[1] * 5, 7) * 9;
+
+  uint64_t t = s[1] << 17;
+  s[2] ^= s[0];
+  s[3] ^= s[1];
+  s[1] ^= s[2];
+  s[0] ^= s[3];
+  s[2] ^= t;
+  s[3] = rotl(s[3], 45);
+
+  return result;
+}
+
+static inline uint64_t vm_random64(struct VM vm) {
+  return xoshiro256ss(vm.thread->prng_state.s);
+}
+
+static inline Value vm_random_fixnum(struct VM vm) {
+  return value_from_fixnum(vm_random64(vm));
 }
 
 #endif // WHIFFLE_VM_H
