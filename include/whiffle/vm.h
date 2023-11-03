@@ -869,12 +869,12 @@ static inline uint64_t xoshiro256ss(uint64_t *s) {
   return result;
 }
 
-static inline uint64_t vm_random64(struct VM vm) {
-  return xoshiro256ss(vm.thread->prng_state.s);
+static inline uint64_t thread_random64(Thread *thread) {
+  return xoshiro256ss(thread->prng_state.s);
 }
 
-static inline Value vm_random_fixnum(struct VM vm) {
-  return value_from_fixnum(vm_random64(vm));
+static inline Value thread_random_fixnum(Thread *thread) {
+  return value_from_fixnum(thread_random64(thread));
 }
 
 #endif // WHIFFLE_VM_H

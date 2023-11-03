@@ -28,6 +28,7 @@
    (set-current-module (resolve-module '(whiffle primitives)))
    (add-interesting-primitive! 'call-c-primitive)
    (add-interesting-primitive! 'call-c-primitive/result)
+   (add-interesting-primitive! 'call-c-primitive/thread)
    (add-interesting-primitive! 'call-c-primitive/alloc)
    (add-interesting-primitive! 'call-c-primitive/pred)))
 

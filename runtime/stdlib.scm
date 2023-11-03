@@ -66,6 +66,11 @@
   (or (null? x)
       (and (pair? x)
            (list? (cdr x)))))
+(define (length x)
+  (let lp ((x x) (len 0))
+    (if (null? x)
+        len
+        (lp (cdr x) (1+ len)))))
 
 (define (vector->list v)
   (let lp ((i 0))
@@ -88,7 +93,7 @@
 (define (bytevector-u8-set! bv i u8) (%bytevector-u8-set! bv i u8))
 
 (define (random-fixnum!)
-  (call-c-primitive/result "vm_random_fixnum"))
+  (call-c-primitive/thread "thread_random_fixnum"))
 
 (define (box val) (%box val))
 (define (box? x) (%box? x))

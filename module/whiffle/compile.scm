@@ -244,6 +244,8 @@
   (<-code asm "  vm.sp[~a] = ~a(~a);\n" dst prim
           (string-join (map (lambda (arg) (format #f "vm.sp[~a]" arg)) args)
                        ", ")))
+(define (emit-c-primcall/thread asm prim dst args)
+  (<-code asm "  vm.sp[~a] = ~a(vm.thread~{, vm.sp[~a]~});\n" dst prim args))
 (define (emit-c-primcall/alloc asm prim dst args junk-slots)
   (<-code asm "  vm.sp[~a] = ~a(vm_trim(vm, ~a)~{, &vm.sp[~a]~});\n" dst prim
           junk-slots args))
@@ -522,13 +524,16 @@
 
          (((or 'call-c-primitive
                'call-c-primitive/result
+               'call-c-primitive/thread
                'call-c-primitive/alloc
                'call-c-primitive/pred)
            ($ <const> _ (? string? c-prim))
            . args)
           (let ((exp (make-primcall src `(,name ,c-prim) (map for-value args))))
             (match name
-              ((or 'call-c-primitive/result 'call-c-primitive/alloc)
+              ((or 'call-c-primitive/result
+                   'call-c-primitive/thread
+                   'call-c-primitive/alloc)
                (match ctx
                  ('value exp)
                  ('effect (drop exp))
@@ -682,6 +687,7 @@ lambda-case clause @var{clause}."
                               'call-c-primitive/pred) c-prim) args)
        (visit-args args))
       (($ <primcall> src ((or 'call-c-primitive/result
+                              'call-c-primitive/thread
                               'call-c-primitive/alloc) c-prim) args)
        (max 1 (visit-args args)))
 
@@ -848,6 +854,13 @@ lambda-case clause @var{clause}."
                 (arg-offsets (reverse
                               (iota (length args) (env-sp-offset env)))))
            (emit-c-primcall/result asm c-prim dst arg-offsets)
+           (maybe-mov dst)))
+
+        (($ <primcall> src ('call-c-primitive/thread c-prim) args)
+         (let* ((env (push-args args env))
+                (arg-offsets (reverse
+                              (iota (length args) (env-sp-offset env)))))
+           (emit-c-primcall/thread asm c-prim dst arg-offsets)
            (maybe-mov dst)))
 
         (($ <primcall> src ('call-c-primitive/alloc c-prim) args)
