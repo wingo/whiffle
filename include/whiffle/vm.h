@@ -159,6 +159,24 @@ static inline void vm_record_cooperative_safepoint(VM vm) {
     vm.thread->roots.safepoint = vm;
 }
 
+
+#define VM_CRASH(reason)                                                \
+  do {                                                                  \
+    fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, reason);         \
+    abort();                                                            \
+  } while (0)
+
+#define VM_CHECK(x)                                                     \
+  do {                                                                  \
+    if (GC_UNLIKELY(!(x))) {                                            \
+      VM_CRASH("assertion failed: " #x);                                \
+    }                                                                   \
+  } while (0)
+
+static inline void vm_check_stack(VM vm, size_t slots) {
+  VM_CHECK(vm.sp - vm.thread->sp_limit >= slots);
+}
+
 static inline VM vm_expand_stack(VM vm, size_t slots) {
   vm.sp -= slots;
   if (gc_safepoint_mechanism() == GC_SAFEPOINT_MECHANISM_SIGNAL) {
@@ -196,7 +214,7 @@ static inline void vm_closure_init(Value closure, size_t idx, Value val) {
 
 static inline Value vm_closure_ref(Value closure, size_t idx) {
   Closure *c = value_to_heap_object(closure);
-  if (idx >= tagged_payload(&c->tag)) abort();
+  VM_CHECK(idx < tagged_payload(&c->tag));
   return c->free_vars[idx];
 }
 
@@ -205,7 +223,7 @@ static inline int is_closure(Value v) {
     tagged_kind(value_to_heap_object(v)) == CLOSURE_TAG;
 }
 static inline Code vm_closure_code(Value closure) {
-  if (!is_closure(closure)) abort();
+  VM_CHECK(is_closure(closure));
   Closure *c = value_to_heap_object(closure);
   return c->code;
 }
@@ -228,7 +246,7 @@ static inline int is_box(Value v) {
 }
 
 static inline void vm_box_set(Value box, Value val) {
-  if (!is_box(box)) abort();
+  VM_CHECK(is_box(box));
   Box *b = value_to_heap_object(box);
   gc_write_barrier(gc_ref_from_heap_object(b), sizeof(*b),
                    gc_edge(&b->val), gc_ref(val.payload));
@@ -236,40 +254,40 @@ static inline void vm_box_set(Value box, Value val) {
 }
 
 static inline Value vm_box_ref(Value box) {
-  if (!is_box(box)) abort();
+  VM_CHECK(is_box(box));
   Box *b = value_to_heap_object(box);
   return b->val;
 }
 
 static inline Value vm_add(Value a, Value b) {
-  if (!is_fixnum(a)) abort();
-  if (!is_fixnum(b)) abort();
+  VM_CHECK(is_fixnum(a));
+  VM_CHECK(is_fixnum(b));
   return make_fixnum(fixnum_value(a) + fixnum_value(b));
 }
 
 static inline Value vm_sub(Value a, Value b) {
-  if (!is_fixnum(a)) abort();
-  if (!is_fixnum(b)) abort();
+  VM_CHECK(is_fixnum(a));
+  VM_CHECK(is_fixnum(b));
   return make_fixnum(fixnum_value(a) - fixnum_value(b));
 }
 
 static inline Value vm_mul(Value a, Value b) {
-  if (!is_fixnum(a)) abort();
-  if (!is_fixnum(b)) abort();
+  VM_CHECK(is_fixnum(a));
+  VM_CHECK(is_fixnum(b));
   return make_fixnum(fixnum_value(a) * fixnum_value(b));
 }
 
 static inline Value vm_quo(Value a, Value b) {
-  if (!is_fixnum(a)) abort();
-  if (!is_fixnum(b)) abort();
-  if (fixnum_value(b) == 0) abort();
+  VM_CHECK(is_fixnum(a));
+  VM_CHECK(is_fixnum(b));
+  VM_CHECK(fixnum_value(b) != 0);
   return make_fixnum(fixnum_value(a) / fixnum_value(b));
 }
 
 static inline Value vm_rem(Value a, Value b) {
-  if (!is_fixnum(a)) abort();
-  if (!is_fixnum(b)) abort();
-  if (fixnum_value(b) == 0) abort();
+  VM_CHECK(is_fixnum(a));
+  VM_CHECK(is_fixnum(b));
+  VM_CHECK(fixnum_value(b) != 0);
   return make_fixnum(fixnum_value(a) % fixnum_value(b));
 }
 
@@ -290,19 +308,19 @@ static inline int is_pair(Value x) {
 }
 
 static inline Value vm_car(Value pair) {
-  if (!is_pair(pair)) abort();
+  VM_CHECK(is_pair(pair));
   Pair *p = value_to_heap_object(pair);
   return tagged_value(&p->tag);
 }
 
 static inline Value vm_cdr(Value pair) {
-  if (!is_pair(pair)) abort();
+  VM_CHECK(is_pair(pair));
   Pair *p = value_to_heap_object(pair);
   return p->cdr;
 }
 
 static inline void vm_set_car(Value pair, Value val) {
-  if (!is_pair(pair)) abort();
+  VM_CHECK(is_pair(pair));
   Pair *p = value_to_heap_object(pair);
   gc_write_barrier(gc_ref_from_heap_object(p), sizeof(*p),
                    gc_edge(&p->tag), gc_ref(val.payload));
@@ -310,7 +328,7 @@ static inline void vm_set_car(Value pair, Value val) {
 }
 
 static inline void vm_set_cdr(Value pair, Value val) {
-  if (!is_pair(pair)) abort();
+  VM_CHECK(is_pair(pair));
   Pair *p = value_to_heap_object(pair);
   gc_write_barrier(gc_ref_from_heap_object(p), sizeof(*p),
                    gc_edge(&p->cdr), gc_ref(val.payload));
@@ -318,9 +336,9 @@ static inline void vm_set_cdr(Value pair, Value val) {
 }
 
 static inline Value vm_make_vector(VM vm, Value size, Value *init_loc) {
-  if (!is_fixnum(size)) abort();
+  VM_CHECK(is_fixnum(size));
   intptr_t c_size = fixnum_value(size);
-  if (c_size < 0 || c_size > (((uintptr_t)-1) >> 8)) abort();
+  VM_CHECK(0 <= c_size && c_size <= (((uintptr_t)-1) >> 8));
   size_t bytes = sizeof(Vector) + c_size * sizeof(Value);
   Vector *ret = gc_allocate_fast(vm.thread->mut, bytes);
   if (GC_UNLIKELY(!ret)) {
@@ -339,7 +357,7 @@ static inline Value vm_make_vector(VM vm, Value size, Value *init_loc) {
 }
 
 static inline Value vm_allocate_vector(VM vm, size_t size) {
-  if (size > (((uintptr_t)-1) >> 8)) abort();
+  VM_CHECK(size <= (((uintptr_t)-1) >> 8));
   size_t bytes = sizeof(Vector) + size * sizeof(Value);
   Vector *ret = gc_allocate_fast(vm.thread->mut, bytes);
   if (GC_UNLIKELY(!ret)) {
@@ -355,28 +373,28 @@ static inline int is_vector(Value x) {
 }
 
 static inline Value vm_vector_length(Value vector) {
-  if (!is_vector(vector)) abort();
+  VM_CHECK(is_vector(vector));
   Vector *v = value_to_heap_object(vector);
   return make_fixnum(tagged_payload(&v->tag));
 }
 
 static inline Value vm_vector_ref(Value vector, Value idx) {
-  if (!is_vector(vector)) abort();
-  if (!is_fixnum(idx)) abort();
+  VM_CHECK(is_vector(vector));
+  VM_CHECK(is_fixnum(idx));
   Vector *v = value_to_heap_object(vector);
   size_t size = tagged_payload(&v->tag);
   intptr_t c_idx = fixnum_value(idx);
-  if (c_idx < 0 || c_idx >= size) abort();
+  VM_CHECK(0 <= c_idx && c_idx < size);
   return v->vals[c_idx];
 }
 
 static inline void vm_vector_set(Value vector, Value idx, Value val) {
-  if (!is_vector(vector)) abort();
-  if (!is_fixnum(idx)) abort();
+  VM_CHECK(is_vector(vector));
+  VM_CHECK(is_fixnum(idx));
   Vector *v = value_to_heap_object(vector);
   size_t size = tagged_payload(&v->tag);
   intptr_t c_idx = fixnum_value(idx);
-  if (c_idx < 0 || c_idx >= size) abort();
+  VM_CHECK(0 <= c_idx && c_idx < size);
   gc_write_barrier(gc_ref_from_heap_object(v), sizeof(*v) + sizeof(Value)*size,
                    gc_edge(&v->vals[c_idx]), gc_ref(val.payload));
   v->vals[c_idx] = val;
@@ -392,7 +410,7 @@ static inline int is_string(Value x) {
 }
 
 static inline Value vm_string_to_vector(Value str) {
-  if (!is_string(str)) abort();
+  VM_CHECK(is_string(str));
   String *s = value_to_heap_object(str);
   return value_from_heap_object(s->chars);
 }
@@ -402,17 +420,17 @@ static inline int is_symbol(Value x) {
 }
 
 static inline Value vm_symbol_to_string(Value sym) {
-  if (!is_symbol(sym)) abort();
+  VM_CHECK(is_symbol(sym));
   Symbol *s = value_to_heap_object(sym);
   return value_from_heap_object(s->str);
 }
 
 static inline Value vm_make_bytevector(VM vm, Value *size, Value *init) {
-  if (!is_fixnum(*size)) abort();
+  VM_CHECK(is_fixnum(*size));
   intptr_t c_size = fixnum_value(*size);
   intptr_t c_init = fixnum_value(*init);
-  if (c_size < 0 || c_size > (((uintptr_t)-1) >> 8)) abort();
-  if (c_init < -128 || c_init > 255) abort();
+  VM_CHECK(0 <= c_size && c_size <= (((uintptr_t)-1) >> 8));
+  VM_CHECK(-128 <= c_init && c_init <= 255);
   size_t bytes = sizeof(Bytevector) + c_size * sizeof(uint8_t);
   Bytevector *ret = gc_allocate_fast(vm.thread->mut, bytes);
   if (GC_UNLIKELY(!ret)) {
@@ -430,36 +448,36 @@ static inline int is_bytevector(Value x) {
 }
 
 static inline Value vm_bytevector_length(Value bytevector) {
-  if (!is_bytevector(bytevector)) abort();
+  VM_CHECK(is_bytevector(bytevector));
   Bytevector *v = value_to_heap_object(bytevector);
   return make_fixnum(tagged_payload(&v->tag));
 }
 
 static inline Value vm_bytevector_u8_ref(Value bytevector, Value idx) {
-  if (!is_bytevector(bytevector)) abort();
-  if (!is_fixnum(idx)) abort();
+  VM_CHECK(is_bytevector(bytevector));
+  VM_CHECK(is_fixnum(idx));
   Bytevector *v = value_to_heap_object(bytevector);
   size_t size = tagged_payload(&v->tag);
   intptr_t c_idx = fixnum_value(idx);
-  if (c_idx < 0 || c_idx >= size) abort();
+  VM_CHECK(0 <= c_idx && c_idx < size);
   return value_from_fixnum(v->vals[c_idx]);
 }
 
 static inline void vm_bytevector_u8_set(Value bytevector, Value idx, Value val) {
-  if (!is_bytevector(bytevector)) abort();
-  if (!is_fixnum(idx)) abort();
-  if (!is_fixnum(val)) abort();
+  VM_CHECK(is_bytevector(bytevector));
+  VM_CHECK(is_fixnum(idx));
+  VM_CHECK(is_fixnum(val));
   Bytevector *v = value_to_heap_object(bytevector);
   size_t size = tagged_payload(&v->tag);
   intptr_t c_idx = fixnum_value(idx);
   intptr_t c_val = fixnum_value(val);
-  if (c_idx < 0 || c_idx >= size) abort();
-  if (c_val < -128 || 255 < c_val) abort();
+  VM_CHECK(0 <= c_idx && c_idx < size);
+  VM_CHECK(-128 <= c_val && c_val <= 255);
   v->vals[c_idx] = c_val;
 }
 
 static inline Value vm_make_ephemeron(VM vm, Value *key_loc, Value *value_loc) {
-  if (!is_heap_object(*key_loc)) abort();
+  VM_CHECK(is_heap_object(*key_loc));
   vm_record_cooperative_safepoint(vm);
   Ephemeron *ret = gc_allocate_ephemeron(vm.thread->mut);
   tagged_set_payload((Tagged*)ret, EPHEMERON_TAG, 0);
@@ -474,7 +492,7 @@ static inline int is_ephemeron(Value x) {
 }
 
 static inline Value vm_ephemeron_key(Value ephemeron) {
-  if (!is_ephemeron(ephemeron)) abort();
+  VM_CHECK(is_ephemeron(ephemeron));
   Ephemeron *e = value_to_heap_object(ephemeron);
   struct gc_ref k = gc_ephemeron_key(e);
   return gc_ref_is_heap_object(k)
@@ -482,7 +500,7 @@ static inline Value vm_ephemeron_key(Value ephemeron) {
 }
 
 static inline Value vm_ephemeron_value(Value ephemeron) {
-  if (!is_ephemeron(ephemeron)) abort();
+  VM_CHECK(is_ephemeron(ephemeron));
   Ephemeron *e = value_to_heap_object(ephemeron);
   struct gc_ref v = gc_ephemeron_value(e);
   return gc_ref_is_heap_object(v)
@@ -490,22 +508,22 @@ static inline Value vm_ephemeron_value(Value ephemeron) {
 }
 
 static inline Value vm_ephemeron_next(Value ephemeron) {
-  if (!is_ephemeron(ephemeron)) abort();
+  VM_CHECK(is_ephemeron(ephemeron));
   Ephemeron *e = value_to_heap_object(ephemeron);
   Ephemeron *next = gc_ephemeron_chain_next(e);
   return next ? value_from_heap_object(next) : IMMEDIATE_FALSE;
 }
 
 static inline void vm_ephemeron_kill(Value ephemeron) {
-  if (!is_ephemeron(ephemeron)) abort();
+  VM_CHECK(is_ephemeron(ephemeron));
   Ephemeron *e = value_to_heap_object(ephemeron);
   gc_ephemeron_mark_dead(e);
 }
 
 static inline Value vm_make_ephemeron_table(VM vm, Value *size_loc) {
-  if (!is_fixnum(*size_loc)) abort();
+  VM_CHECK(is_fixnum(*size_loc));
   intptr_t c_size = fixnum_value(*size_loc);
-  if (c_size < 0 || c_size > (((uintptr_t)-1) >> 8)) abort();
+  VM_CHECK(0 <= c_size && c_size <= (((uintptr_t)-1) >> 8));
   size_t bytes = sizeof(EphemeronTable) + c_size * sizeof(Value);
   EphemeronTable *ret = gc_allocate_fast(vm.thread->mut, bytes);
   if (GC_UNLIKELY(!ret)) {
@@ -523,31 +541,31 @@ static inline int is_ephemeron_table(Value x) {
 }
 
 static inline Value vm_ephemeron_table_length(Value table) {
-  if (!is_ephemeron_table(table)) abort();
+  VM_CHECK(is_ephemeron_table(table));
   EphemeronTable *t = value_to_heap_object(table);
   return value_from_fixnum(tagged_payload(&t->tag));
 }
 
 static inline Value vm_ephemeron_table_ref(Value table, Value idx) {
-  if (!is_ephemeron_table(table)) abort();
+  VM_CHECK(is_ephemeron_table(table));
   EphemeronTable *t = value_to_heap_object(table);
-  if (!is_fixnum(idx)) abort();
+  VM_CHECK(is_fixnum(idx));
   size_t size = tagged_payload(&t->tag);
   intptr_t c_idx = fixnum_value(idx);
-  if (c_idx < 0 || c_idx >= size) abort();
+  VM_CHECK(0 <= c_idx && c_idx < size);
   Ephemeron *e = gc_ephemeron_chain_head(&t->vals[c_idx]);
   return e ? value_from_heap_object(e) : IMMEDIATE_FALSE;
 }
 
 static inline void vm_ephemeron_table_push(Value table, Value idx, Value ephemeron) {
-  if (!is_ephemeron_table(table)) abort();
-  if (!is_ephemeron(ephemeron)) abort();
+  VM_CHECK(is_ephemeron_table(table));
+  VM_CHECK(is_ephemeron(ephemeron));
   EphemeronTable *t = value_to_heap_object(table);
   Ephemeron *e = value_to_heap_object(ephemeron);
-  if (!is_fixnum(idx)) abort();
+  VM_CHECK(is_fixnum(idx));
   size_t size = tagged_payload(&t->tag);
   intptr_t c_idx = fixnum_value(idx);
-  if (c_idx < 0 || c_idx >= size) abort();
+  VM_CHECK(0 <= c_idx && c_idx < size);
   gc_write_barrier(gc_ref_from_heap_object(t), sizeof(*t) + sizeof(Value)*size,
                    gc_edge(&t->vals[c_idx]), gc_ref_from_heap_object(e));
   gc_ephemeron_chain_push(&t->vals[c_idx], e);
@@ -559,7 +577,7 @@ static inline Value vm_char_to_integer(Value x) {
 
 static inline Value vm_integer_to_char(Value x) {
   intptr_t i = value_to_fixnum(x);
-  if (i < 0 || i >= (1 << 21)) __builtin_trap();
+  VM_CHECK(0 <= i && i < (1 << 21));
   return value_from_char(i);
 }
 
@@ -612,14 +630,14 @@ static inline int vm_is_eq(Value a, Value b) {
 }
 
 static inline int vm_is_less(Value a, Value b) {
-  if (!is_fixnum(a)) abort();
-  if (!is_fixnum(b)) abort();
+  VM_CHECK(is_fixnum(a));
+  VM_CHECK(is_fixnum(b));
   return fixnum_value(a) < fixnum_value(b);
 }
 
 static inline int vm_is_numerically_eq(Value a, Value b) {
-  if (!is_fixnum(a)) abort();
-  if (!is_fixnum(b)) abort();
+  VM_CHECK(is_fixnum(a));
+  VM_CHECK(is_fixnum(b));
   return fixnum_value(a) == fixnum_value(b);
 }
 
@@ -657,7 +675,7 @@ static inline void vm_print_value(Value val) {
     fputc('"', stdout);
     fputc('\n', stdout);
   } else {
-    abort();
+    VM_CRASH("unexpected value");
   }
 }
 
@@ -673,7 +691,7 @@ static void* vm_thread_transition_to_running(void *data) {
   do
     pthread_cond_wait(&thread->cond, &thread->lock);
   while (thread->state == THREAD_WAITING);
-  if (thread->state != THREAD_RUNNING) abort();
+  VM_CHECK(thread->state == THREAD_RUNNING);
   pthread_mutex_unlock(&thread->lock);
   return NULL;
 }
@@ -683,7 +701,7 @@ static void* vm_thread_wait_for_stopping(void *data) {
   pthread_mutex_lock(&thread->lock);
   while (thread->state < THREAD_STOPPING)
     pthread_cond_wait(&thread->cond, &thread->lock);
-  if (thread->state != THREAD_STOPPING) abort();
+  VM_CHECK(thread->state == THREAD_STOPPING);
   // Keep lock.
   return NULL;
 }
@@ -695,7 +713,7 @@ static void* vm_thread_transition_to_stopped(void *data) {
   pthread_cond_signal(&thread->cond);
   while (thread->state == THREAD_STOPPING)
     pthread_cond_wait(&thread->cond, &thread->lock);
-  if (thread->state != THREAD_STOPPED) abort();
+  VM_CHECK(thread->state == THREAD_STOPPED);
   pthread_mutex_unlock(&thread->lock);
   return NULL;
 }
@@ -735,7 +753,7 @@ static void* vm_thread_proc_inner(struct gc_stack_addr *stack_base,
   // Run the thunk.
   vm = vm_closure_code(vm.sp[0])(vm, 1);
   // Must have one value live: the return value.
-  if (vm.sp != thread->sp_base - 1) abort();
+  VM_CHECK(vm.sp == thread->sp_base - 1);
   thread->roots.safepoint = vm;
 
   // RDV with joiner to send result back.
@@ -772,13 +790,13 @@ static void* vm_spawn_thread_without_gc(void *data) {
   while (thread->state == THREAD_SPAWNING)
     pthread_cond_wait(&thread->cond, &thread->lock);
 
-  if (thread->state != THREAD_WAITING) abort();
+  VM_CHECK(thread->state == THREAD_WAITING);
 
   return thread;
 }
 
 static inline Value vm_spawn_thread(struct VM vm, Value *thunk) {
-  if (!is_closure(*thunk)) abort();
+  VM_CHECK(is_closure(*thunk));
 
   vm_record_cooperative_safepoint(vm);
 
@@ -798,7 +816,7 @@ static inline Value vm_spawn_thread(struct VM vm, Value *thunk) {
 }
 
 static inline Value vm_join_thread(struct VM vm, Value *handle) {
-  if (!is_thread(*handle)) abort();
+  VM_CHECK(is_thread(*handle));
   ThreadHandle *th = value_to_heap_object(*handle);
   Thread *thread = th->thread;
 
@@ -815,15 +833,15 @@ static inline Value vm_join_thread(struct VM vm, Value *handle) {
 
 static inline Value vm_current_microseconds(void) {
   struct timeval t;
-  if (gettimeofday(&t, NULL) == -1) abort();
+  if (gettimeofday(&t, NULL) == -1) VM_CRASH("gettimeofday failed");
   unsigned long usec = t.tv_sec * 1000 * 1000 + t.tv_usec;
-  if (usec > (unsigned long)FIXNUM_MAX) abort();
+  VM_CHECK(usec <= (unsigned long)FIXNUM_MAX);
   return value_from_fixnum(usec);
 }
 
 static inline void vm_die(void) {
   fflush(stdout);
-  abort();
+  VM_CRASH("die");
 }
 
 static inline void vm_wrong_num_args(size_t expected, size_t actual) {

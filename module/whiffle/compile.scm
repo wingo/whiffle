@@ -62,7 +62,7 @@
 
 (define (emit-expand-sp asm slots)
   (unless (zero? slots)
-    (<-code asm "  if (vm.sp - vm.thread->sp_limit < ~a) abort();\n" slots)
+    (<-code asm "  vm_check_stack(vm, ~a);\n" slots)
     (<-code asm "  vm = vm_expand_stack(vm, ~a);\n" slots)))
 
 (define (make-label asm)
