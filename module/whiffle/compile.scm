@@ -141,24 +141,24 @@
   (if (zero? nfree)
       (emit-constant-ref asm dst (make-static-closure func-label))
       (<-code asm
-              "  vm.sp[~a] = vm_make_closure (vm_trim(vm, ~a), &F~a, ~a);\n"
+              "  vm.sp[~a] = vm_make_closure(vm_trim(vm, ~a), &F~a, ~a);\n"
               dst junk-slots func-label nfree)))
 
 (define (emit-closure-init/bound asm closure-idx free-idx val)
   (<-code asm
-          "  vm_closure_init (vm.sp[~a], ~a, vm.sp[~a]);\n"
+          "  vm_closure_init(vm.sp[~a], ~a, vm.sp[~a]);\n"
           closure-idx free-idx val))
 
 (define (emit-closure-init/free asm closure-idx free-idx self-idx val)
   (<-code asm
-          "  vm_closure_init (vm.sp[~a], ~a, vm_closure_ref (vm.sp[~a], ~a));\n"
+          "  vm_closure_init(vm.sp[~a], ~a, vm_closure_ref (vm.sp[~a], ~a));\n"
           closure-idx free-idx self-idx val))
 
 (define (emit-mov asm dst src)
   (<-code asm "  vm.sp[~a] = vm.sp[~a];\n" dst src))
 
 (define (emit-free-ref asm dst self-idx idx)
-  (<-code asm "  vm.sp[~a] = vm_closure_ref (vm.sp[~a], ~a);\n"
+  (<-code asm "  vm.sp[~a] = vm_closure_ref(vm.sp[~a], ~a);\n"
           dst self-idx idx))
 
 (define (emit-boxed-bound-set asm bound-idx val)
