@@ -694,8 +694,7 @@ lambda-case clause @var{clause}."
       (($ <primcall> src name args)
        (let* ((prim (lookup-primitive name))
               (has-result? (primitive-has-result? prim)))
-         (max (visit-args args)
-              (if (primitive-has-result? (lookup-primitive name)) 1 0))))
+         (max (visit-args args) (if has-result? 1 0))))
 
       (($ <conditional> src test consequent alternate)
        (max (visit test)
