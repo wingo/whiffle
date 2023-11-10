@@ -686,6 +686,7 @@ static inline int is_thread(Value x) {
 static void* vm_thread_transition_to_running(void *data) {
   Thread *thread = data;
   pthread_mutex_lock(&thread->lock);
+  VM_CHECK(thread->state == THREAD_SPAWNING);
   thread->state = THREAD_WAITING;
   pthread_cond_signal(&thread->cond);
   do
@@ -709,6 +710,7 @@ static void* vm_thread_wait_for_stopping(void *data) {
 static void* vm_thread_transition_to_stopped(void *data) {
   Thread *thread = data;
   pthread_mutex_lock(&thread->lock);
+  VM_CHECK(thread->state == THREAD_RUNNING);
   thread->state = THREAD_STOPPING;
   pthread_cond_signal(&thread->cond);
   while (thread->state == THREAD_STOPPING)
