@@ -147,6 +147,9 @@
 (run-benchmark "splay.scm" '()
                #:minimum-serial-heap-size #e47e6
                #:heap-size-multiplier 2.5)
+(run-benchmark "cpstak.scm" '(32 16 8 9)
+               #:minimum-serial-heap-size #e1e6
+               #:heap-size-multiplier 4)
 
 (format #t "All tests passed.\n")
 (exit 0)
