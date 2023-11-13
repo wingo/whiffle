@@ -244,6 +244,7 @@ static inline int is_box(Value v) {
   return is_heap_object(v) &&
     tagged_kind(value_to_heap_object(v)) == BOX_TAG;
 }
+static inline int vm_is_box(Value v) { return is_box(v); }
 
 static inline void vm_box_set(Value box, Value val) {
   VM_CHECK(is_box(box));

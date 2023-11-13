@@ -36,9 +36,10 @@
 (define *all-collectors*
   (cons* 'semi 'bdw (whippet-collectors)))
 
-(define (default-collector-filter collector nthreads parallelism)
+(define (default-collector-filter collector nthreads parallelism multiplier)
   (cond
-   ((eq? collector 'semi) (eq? nthreads parallelism 1))
+   ((eq? collector 'semi)
+    (and (eq? nthreads parallelism 1) (>= multiplier 2)))
    ((eq? collector 'bdw) #t)
    ((string-contains (symbol->string collector) "parallel") #t)
    (else (eq? parallelism 1))))
@@ -75,7 +76,7 @@
          (define configuration
            (list collector #:nthreads nthreads #:parallelism parallelism))
          (cond
-          ((collector-filter collector nthreads parallelism)
+          ((collector-filter collector nthreads parallelism heap-size-multiplier)
            (let ((tag (make-prompt-tag)))
              (call-with-prompt
               tag
@@ -153,6 +154,9 @@
 (run-benchmark "eval-fib.scm" '(32)
                #:minimum-serial-heap-size #e1e6
                #:heap-size-multiplier 4)
+(run-benchmark "earley.scm" '(14)
+               #:minimum-serial-heap-size #e250e6
+               #:heap-size-multiplier 2.5)
 
 (format #t "All tests passed.\n")
 (exit 0)
