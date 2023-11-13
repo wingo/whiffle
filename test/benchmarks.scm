@@ -150,6 +150,9 @@
 (run-benchmark "cpstak.scm" '(32 16 8 9)
                #:minimum-serial-heap-size #e1e6
                #:heap-size-multiplier 4)
+(run-benchmark "eval-fib.scm" '(32)
+               #:minimum-serial-heap-size #e1e6
+               #:heap-size-multiplier 4)
 
 (format #t "All tests passed.\n")
 (exit 0)
