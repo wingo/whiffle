@@ -18,11 +18,10 @@
 ;;; along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 (define-module (whiffle paths)
-  #:use-module ((srfi srfi-1) #:select (fold))
   #:use-module (ice-9 match)
   #:export (whiffle-filename
             whiffle-build.mk
-            whiffle-stdlib.scm
+            whiffle-prelude.scm
             temp-filename))
 
 (define (resolve filename)
@@ -48,8 +47,8 @@
 (define (whiffle-build.mk)
   (whiffle-filename "build.mk"))
 
-(define (whiffle-stdlib.scm)
-  (whiffle-filename "runtime" "stdlib.scm"))
+(define (whiffle-prelude.scm)
+  (whiffle-filename "runtime" "prelude.scm"))
 
 (define (temp-filename filename)
   (in-vicinity tmpdir filename))

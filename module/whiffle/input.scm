@@ -40,7 +40,7 @@
 
 (define (expand exp)
   (let ((exp #`(let ()
-                 (include #,(whiffle-stdlib.scm))
+                 (include #,(whiffle-prelude.scm))
                  (let ()
                    #,exp))))
     (save-module-excursion

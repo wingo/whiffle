@@ -23,11 +23,8 @@
     v))
 
 (lambda (nthreads x y z output)
-  (let ((ret (make-vector nthreads #f)))
-    (parallel nthreads
-              (lambda (i)
-                (vector-set! ret i (cpstak x y z))))
+  (let ((retv (parallel nthreads (lambda (i) (cpstak x y z)))))
     (let lp ((i 0))
       (when (< i nthreads)
-        (unless (eq? (vector-ref ret i) output)
-          (error "unexpected output" i (vector-ref ret i) output))))))
+        (unless (eq? (vector-ref retv i) output)
+          (error "unexpected output" i (vector-ref retv i) output))))))
