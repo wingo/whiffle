@@ -160,6 +160,12 @@
 (run-benchmark "peval.scm" '(12 1)
                #:minimum-serial-heap-size #e37e6
                #:heap-size-multiplier 2.5)
+(run-benchmark "nboyer.scm" '(4)
+               #:minimum-serial-heap-size #e70e6
+               #:heap-size-multiplier 2.5)
+(run-benchmark "nboyer.scm" '(5)
+               #:minimum-serial-heap-size #e208e6
+               #:heap-size-multiplier 2.5)
 
 (format #t "All tests passed.\n")
 (exit 0)
