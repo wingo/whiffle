@@ -48,11 +48,18 @@
 (define-syntax-rule (<-decl asm fmt arg ...)
   (format (asm-decl-port asm) fmt arg ...))
 
-(define (emit-begin-function asm label)
+(define (emit-begin-function asm label src meta)
   (<-decl asm "static VM F~a (VM vm, size_t nargs);\n"
           label)
   (<-code asm "static VM F~a (VM vm, size_t nargs) {\n"
-          label))
+          label)
+  (match (assq-ref meta 'name)
+    (#f #f)
+    (name (<-code asm "  // ~a\n" name)))
+  (match src
+    (#(file line column)
+     (<-code asm "  // ~a:~a:~a\n" file line column))
+    (_ #f)))
 
 (define (emit-end-function asm)
   (<-code asm "}\n\n"))
@@ -226,6 +233,8 @@
   (<-code asm "  vm.sp[~a] = vm_string_to_vector(vm.sp[~a]);\n" dst str))
 (define (emit-symbol->string asm dst sym)
   (<-code asm "  vm.sp[~a] = vm_symbol_to_string(vm.sp[~a]);\n" dst sym))
+(define (emit-string->symbol asm dst str junk-slots)
+  (<-code asm "  vm.sp[~a] = vm_string_to_symbol(vm_trim(vm, ~a), &vm.sp[~a]);\n" dst junk-slots str))
 (define (emit-char->integer asm dst ch)
   (<-code asm "  vm.sp[~a] = vm_char_to_integer(vm.sp[~a]);\n" dst ch))
 (define (emit-integer->char asm dst i)
@@ -341,6 +350,8 @@
 
   (symbol?          #:nargs 1 #:predicate? #t  #:emit emit-jump-if-not-symbol)
   (symbol->string   #:nargs 1 #:has-result? #t #:emit emit-symbol->string)
+  (string->symbol   #:nargs 1 #:has-result? #t #:emit emit-string->symbol
+                    #:allocates? #t)
 
   (char?            #:nargs 1 #:predicate? #t  #:emit emit-jump-if-not-char)
   (char->integer    #:nargs 1 #:has-result? #t #:emit emit-char->integer)
@@ -492,6 +503,8 @@
                                        (make-primcall src '< (list b a))
                                        (make-const src #f)
                                        (make-const src #t))))
+
+         (('values x) (for-tail x))
 
          (('list . contents)
           (for-tail
@@ -1039,7 +1052,7 @@ lambda-case clause @var{clause}."
 
   (match closure
     (($ <closure> label ($ <lambda> src meta clause) free)
-     (emit-begin-function asm label)
+     (emit-begin-function asm label src meta)
      (compile-body clause free (compute-frame-size clause))
      (emit-end-function asm))))
 

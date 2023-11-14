@@ -49,9 +49,40 @@
 (define (set-car! x y) (%set-car! x y))
 (define (set-cdr! x y) (%set-cdr! x y))
 
+(define (caar x) (car (car x)))
+(define (cadr x) (car (cdr x)))
+(define (cdar x) (cdr (car x)))
+(define (cddr x) (cdr (cdr x)))
+(define (caaar x) (car (caar x)))
+(define (cadar x) (car (cdar x)))
+(define (caadr x) (car (cadr x)))
+(define (caddr x) (car (cddr x)))
+(define (cdaar x) (cdr (caar x)))
+(define (cddar x) (cdr (cdar x)))
+(define (cdadr x) (cdr (cadr x)))
+(define (cdddr x) (cdr (cddr x)))
+
+(define (caaaar x) (car (caaar x)))
+(define (caadar x) (car (cadar x)))
+(define (caaadr x) (car (caadr x)))
+(define (caaddr x) (car (caddr x)))
+(define (cdaaar x) (cdr (caaar x)))
+(define (cdadar x) (cdr (cadar x)))
+(define (cdaadr x) (cdr (caadr x)))
+(define (cdaddr x) (cdr (caddr x)))
+(define (cadaar x) (car (cdaar x)))
+(define (caddar x) (car (cddar x)))
+(define (cadadr x) (car (cdadr x)))
+(define (cadddr x) (car (cdddr x)))
+(define (cddaar x) (cdr (cdaar x)))
+(define (cdddar x) (cdr (cddar x)))
+(define (cddadr x) (cdr (cdadr x)))
+(define (cddddr x) (cdr (cdddr x)))
+
 (define (acons x y tail) (cons (cons x y) tail))
 
 (define (exact-integer? x) (%exact-integer? x))
+(define (number? x) (exact-integer? x))
 (define (+ x y) (%+ x y))
 (define (- x y) (%- x y))
 (define (* x y) (%* x y))
@@ -70,9 +101,30 @@
 (define (eq? x y) (%eq? x y))
 
 (define (string? x) (%string? x))
+(define (string->vector str)
+  (call-c-primitive/result "vm_string_to_vector" str))
+(define (vector->string v)
+  (call-c-primitive/alloc "vm_vector_to_string" v))
+(define (string->list str)
+  (vector->list (string->vector str)))
+(define (string-append a b)
+  (vector->string (vector-append (string->vector a) (string->vector b))))
+
+(define (number->string x)
+  (let ((digits (let lp ((x (if (< x 0) (- 0 x) x)) (out '()))
+                  (if (zero? x)
+                      out
+                      (lp (quotient x 10)
+                          (cons (integer->char
+                                 (+ (char->integer #\0) (remainder x 10)))
+                                out))))))
+    (if (null? digits)
+        "0"
+        (vector->string (list->vector (if (< x 0) (cons #\- digits) digits))))))
 
 (define (symbol? x) (%symbol? x))
 (define (symbol->string x) (%symbol->string x))
+(define (string->symbol x) (%string->symbol x))
 
 (define (vector? x) (%vector? x))
 (define (make-vector x init) (%make-vector x init))
@@ -84,6 +136,20 @@
 (define (vector-length x) (%vector-length x))
 (define (vector-ref x i) (%vector-ref x i))
 (define (vector-set! x i v) (%vector-set! x i v))
+(define (vector-append a b)
+  (let* ((len (+ (vector-length a) (vector-length b)))
+         (v (make-vector len #f)))
+    (let lp ((i 0))
+      (if (< i (vector-length a))
+          (begin
+            (vector-set! v i (vector-ref a i))
+            (lp (1+ i)))
+          (let lp ((j 0))
+            (if (< j (vector-length b))
+                (begin
+                  (vector-set! v (+ i j) (vector-ref b j))
+                  (lp (1+ j)))
+                v))))))
 
 (define (null? x) (eq? x '()))
 (define (1+ x) (+ x 1))
@@ -127,6 +193,10 @@
      ((null? l) #f)
      ((eq? x (car l)) idx)
      (else (lp (cdr l) (1+ idx))))))
+(define (list-ref l i)
+  (if (zero? i)
+      (car l)
+      (list-ref (cdr l) (1- i))))
 
 (define (equal? x y)
   (cond
@@ -158,6 +228,19 @@
          (equal? (box-ref x) (box-ref y))))
    (else #f)))
 
+(define (assq x alist)
+  (let lp ((alist alist))
+    (match alist
+      (() #f)
+      (((and pair (k . v)) . alist)
+       (if (eq? k x) pair (lp alist))))))
+(define (memq x l)
+  (let lp ((l l))
+    (match l
+      (() #f)
+      ((head . tail)
+       (if (eq? x head) l (lp tail))))))
+
 (define (member x l)
   (let lp ((l l))
     (match l
@@ -188,11 +271,6 @@
     (() b)
     ((x . a) (append a (cons x b)))))
 
-(define (string->vector str)
-  (call-c-primitive/result "vm_string_to_vector" str))
-
-(define (string->list str)
-  (vector->list (string->vector str)))
 
 (define (make-bytevector size init)
   (call-c-primitive/alloc "vm_make_bytevector" size init))
@@ -232,7 +310,7 @@
     (cond
      ((< x 0)
       (write-char #\-)
-      (recur (- x)))
+      (recur (- 0 x)))
      ((= x 0)
       (write-char #\0))
      (else
@@ -244,23 +322,34 @@
         (for-each (lambda (n)
                     (write-char (integer->char (+ (char->integer #\0) n))))
                   digits)))))
+   ((char? x)
+    (write-char #\#)
+    (write-char #\\)
+    (write-char x))
    ((pair? x)
-    (write-char #\()
-    (recur (car x))
-    (let lp ((tail (cdr x)))
-      (cond
-       ((null? tail)
-        (write-char #\)))
-       ((pair? tail)
-        (write-char #\space)
-        (recur (car tail))
-        (lp (cdr tail)))
-       (else
-        (write-char #\space)
-        (write-char #\.)
-        (write-char #\space)
-        (recur tail)
-        (write-char #\))))))
+    (cond
+     ((and (eq? (car x) 'quote)
+           (pair? (cdr x))
+           (null? (cddr x)))
+      (write-char #\')
+      (recur (cadr x)))
+     (else
+      (write-char #\()
+      (recur (car x))
+      (let lp ((tail (cdr x)))
+        (cond
+         ((null? tail)
+          (write-char #\)))
+         ((pair? tail)
+          (write-char #\space)
+          (recur (car tail))
+          (lp (cdr tail)))
+         (else
+          (write-char #\space)
+          (write-char #\.)
+          (write-char #\space)
+          (recur tail)
+          (write-char #\))))))))
    ((string? x)
     (cond
      (quote-strings?

@@ -416,6 +416,25 @@ static inline Value vm_string_to_vector(Value str) {
   return value_from_heap_object(s->chars);
 }
 
+static inline Value vm_vector_to_string(VM vm, Value *v) {
+  {
+    VM_CHECK(is_vector(*v));
+    Vector *vec = value_to_heap_object(*v);
+    size_t len = tagged_payload(&vec->tag);
+    for (size_t i = 0; i < len; i++)
+      VM_CHECK(is_char(vec->vals[i]));
+  }
+  size_t bytes = sizeof(String);
+  String *ret = gc_allocate_fast(vm.thread->mut, bytes);
+  if (GC_UNLIKELY(!ret)) {
+    vm_record_cooperative_safepoint(vm);
+    ret = gc_allocate_slow(vm.thread->mut, bytes);
+  }
+  tagged_set_payload(&ret->tag, STRING_TAG, 0);
+  ret->chars = value_to_heap_object(*v);
+  return value_from_heap_object(ret);
+}
+
 static inline int is_symbol(Value x) {
   return is_heap_object(x) && tagged_kind(value_to_heap_object(x)) == SYMBOL_TAG;
 }
@@ -424,6 +443,19 @@ static inline Value vm_symbol_to_string(Value sym) {
   VM_CHECK(is_symbol(sym));
   Symbol *s = value_to_heap_object(sym);
   return value_from_heap_object(s->str);
+}
+
+static inline Value vm_string_to_symbol(VM vm, Value *str) {
+  VM_CHECK(is_string(*str));
+  size_t bytes = sizeof(Symbol);
+  Symbol *ret = gc_allocate_fast(vm.thread->mut, bytes);
+  if (GC_UNLIKELY(!ret)) {
+    vm_record_cooperative_safepoint(vm);
+    ret = gc_allocate_slow(vm.thread->mut, bytes);
+  }
+  tagged_set_payload(&ret->tag, SYMBOL_TAG, 0);
+  ret->str = value_to_heap_object(*str);
+  return value_from_heap_object(ret);
 }
 
 static inline Value vm_make_bytevector(VM vm, Value *size, Value *init) {

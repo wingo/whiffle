@@ -80,6 +80,7 @@
 
                  symbol?
                  symbol->string
+                 string->symbol
 
                  vector?
                  make-vector
@@ -149,6 +150,7 @@
 
    (symbol? . %symbol?)
    (symbol->string . %symbol->string)
+   (string->symbol . %string->symbol)
 
    (vector? . %vector?)
    (make-vector . %make-vector)
