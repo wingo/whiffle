@@ -95,11 +95,12 @@
                        #:fail (lambda (fmt . args)
                                 (abort-to-prompt tag fmt args))))
                 (match (call-with-input-string (last-line output) read)
-                  (#(mutator-seconds collector-seconds)
-                   (format #t "~:[~*~; ~a: ~]pass: ~,3fs (~,3fs gc)\n"
+                  (#(mutator-seconds collector-seconds major minor p50 p95 p100)
+                   (format #t "~:[~*~; ~a: ~]pass: ~,3fs (~,3fs gc), ~a major+~a minor, p50 pause ~,3fms (~,3f p95, ~,3f max)\n"
                            echo-output? configuration
                            (+ mutator-seconds collector-seconds)
-                           collector-seconds)))
+                           collector-seconds
+                           major minor (* p50 1e3) (* p95 1e3) (* p100 1e3))))
                 (force-output)
                 (vector (cons configuration pass) fail skip))
               (lambda (_ fmt args)
