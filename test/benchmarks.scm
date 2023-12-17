@@ -54,6 +54,8 @@
                         #:key
                         (max-threads (min (current-processor-count) 8))
                         (max-parallelism (min (current-processor-count) 8))
+                        (exit-on-failure? #t)
+                        (repetitions 1)
                         (heap-size-policy 'fixed)
                         (minimum-serial-heap-size #e10e6)
                         (heap-size-multiplier 1.5)
@@ -94,7 +96,8 @@
                        #:print-stats? #t
                        #:fail (lambda (fmt . args)
                                 (abort-to-prompt tag fmt args))))
-                (match (call-with-input-string (last-line output) read)
+                (define stats (call-with-input-string (last-line output) read))
+                (match stats
                   (#(mutator-seconds collector-seconds major minor p50 p95 p100)
                    (format #t "~:[~*~; ~a: ~]pass: ~,3fs (~,3fs gc), ~a major+~a minor, p50 pause ~,3fms (~,3f p95, ~,3f max)\n"
                            echo-output? configuration
@@ -102,7 +105,7 @@
                            collector-seconds
                            major minor (* p50 1e3) (* p95 1e3) (* p100 1e3))))
                 (force-output)
-                (vector (cons configuration pass) fail skip))
+                (vector (acons configuration stats pass) fail skip))
               (lambda (_ fmt args)
                 (format #t "~:[~; ~a: ~]fail\n" echo-output? configuration)
                 (force-output)
@@ -117,8 +120,12 @@
          (fold (lambda (config results)
                  (match config
                    ((nthreads parallelism)
-                    (run-configuration collector nthreads parallelism
-                                       results))))
+                    (let lp ((n 0) (results results))
+                      (if (< n repetitions)
+                          (lp (1+ n)
+                              (run-configuration collector nthreads parallelism
+                                                 results))
+                          results)))))
                results `((1 1)
                          (1 ,max-parallelism)
                          (,max-threads ,max-parallelism))))
@@ -127,7 +134,7 @@
     (match (run-configurations)
       (#(() () skip)
        (format #t " all skipped\n"))
-      (#(pass fail skip)
+      ((and results #(pass fail skip))
        (newline)
        (format #t "passing tests: ~a\n" (length pass))
        (format #t "failing tests: ~a\n" (length fail))
@@ -135,38 +142,37 @@
        (format #t "skipped tests: ~a\n" (length skip))
        (force-output)
        (unless (null? fail)
-         (exit 1))))))
+         (when exit-on-failure?
+           (exit 1)))
+       results))))
 
-(run-benchmark "gcbench.scm" '()
-               #:minimum-serial-heap-size #e20e6
-               #:heap-size-multiplier 2.5)
-(run-benchmark "quads.scm" '(10)
-               #:minimum-serial-heap-size #e65e6
-               #:heap-size-multiplier 2.5)
-(run-benchmark "ephemerons.scm" '(500000)
-               #:minimum-serial-heap-size #e40e6
-               #:heap-size-multiplier 2.5)
-(run-benchmark "splay.scm" '()
-               #:minimum-serial-heap-size #e47e6
-               #:heap-size-multiplier 2.5)
-(run-benchmark "cpstak.scm" '(32 16 8 9)
-               #:minimum-serial-heap-size #e1e6
-               #:heap-size-multiplier 4)
-(run-benchmark "eval-fib.scm" '(32)
-               #:minimum-serial-heap-size #e1e6
-               #:heap-size-multiplier 4)
-(run-benchmark "earley.scm" '(14)
-               #:minimum-serial-heap-size #e250e6
-               #:heap-size-multiplier 2.5)
-(run-benchmark "peval.scm" '(12 1)
-               #:minimum-serial-heap-size #e37e6
-               #:heap-size-multiplier 2.5)
-(run-benchmark "nboyer.scm" '(4)
-               #:minimum-serial-heap-size #e70e6
-               #:heap-size-multiplier 2.5)
-(run-benchmark "nboyer.scm" '(5)
-               #:minimum-serial-heap-size #e208e6
-               #:heap-size-multiplier 2.5)
+(define* (run-benchmarks #:key (heap-size-multiplier 2.5) (repetitions 1))
+  (define results '())
+  (define-syntax-rule (run-many ((file . args) . kwargs) ...)
+    (begin
+      (set! results
+            (acons (format #f "~a~{-~a~}" file 'args)
+                   (run-benchmark file 'args
+                                     #:heap-size-multiplier heap-size-multiplier
+                                     #:repetitions repetitions
+                                     . kwargs)
+                   results))
+      ...
+      (reverse results)))
+
+  (run-many
+   (("gcbench.scm")           #:minimum-serial-heap-size #e20e6)
+   (("quads.scm" 10)          #:minimum-serial-heap-size #e65e6)
+   (("ephemerons.scm" 500000) #:minimum-serial-heap-size #e40e6)
+   (("splay.scm")             #:minimum-serial-heap-size #e47e6)
+   (("cpstak.scm" 32 16 8 9)  #:minimum-serial-heap-size #e1e6)
+   (("eval-fib.scm" 32)       #:minimum-serial-heap-size #e1e6)
+   (("earley.scm" 14)         #:minimum-serial-heap-size #e250e6)
+   (("peval.scm" 12 1)        #:minimum-serial-heap-size #e37e6)
+   (("nboyer.scm" 4)          #:minimum-serial-heap-size #e70e6)
+   (("nboyer.scm" 5)          #:minimum-serial-heap-size #e208e6)))
+
+(run-benchmarks)
 
 (format #t "All tests passed.\n")
 (exit 0)
