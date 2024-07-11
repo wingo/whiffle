@@ -18,6 +18,8 @@
              (whiffle paths)
              ((srfi srfi-1) #:select (fold append-map))
              ((ice-9 threads) #:select (current-processor-count))
+             (ice-9 pretty-print)
+             (ice-9 threads)
              (ice-9 match))
 
 (define (whippet-collectors)
@@ -146,16 +148,18 @@
            (exit 1)))
        results))))
 
-(define* (run-benchmarks #:key (heap-size-multiplier 2.5) (repetitions 1))
+(define* (run-benchmarks #:key (heap-size-multiplier 2.5) (repetitions 1)
+                         (exit-on-failure? #t))
   (define results '())
   (define-syntax-rule (run-many ((file . args) . kwargs) ...)
     (begin
       (set! results
-            (acons (format #f "~a~{-~a~}" file 'args)
+            (acons (format #f "~a~{-~a~}-~,1fx" file 'args heap-size-multiplier)
                    (run-benchmark file 'args
-                                     #:heap-size-multiplier heap-size-multiplier
-                                     #:repetitions repetitions
-                                     . kwargs)
+                                  #:heap-size-multiplier heap-size-multiplier
+                                  #:repetitions repetitions
+                                  #:exit-on-failure? exit-on-failure?
+                                  . kwargs)
                    results))
       ...
       (reverse results)))
@@ -172,7 +176,36 @@
    (("nboyer.scm" 4)          #:minimum-serial-heap-size #e70e6)
    (("nboyer.scm" 5)          #:minimum-serial-heap-size #e208e6)))
 
-(run-benchmarks)
+(define (string->count str)
+  (let ((c (string->number str)))
+    (unless (and c (exact-integer? c) (positive? c))
+      (error "expected a positive integer" str))
+    c))
+
+(define (string->multiplier str)
+  (let ((c (string->number str)))
+    (unless (and c (real? c) (>= c 1.0))
+      (error "expected a real number greater than 1" str))
+    (exact->inexact c)))
+
+(match (program-arguments)
+  ((_) (run-benchmarks))
+  ((_ out-file)
+   (call-with-output-file out-file
+     (lambda (port)
+       (pretty-print (run-benchmarks #:exit-on-failure? #f) port))))
+  ((_ out-file repetitions . heap-size-multipliers)
+   (let ((repetitions (string->count repetitions))
+         (heap-size-multipliers (map string->multiplier heap-size-multipliers)))
+     (call-with-output-file out-file
+       (lambda (port)
+         (pretty-print
+          (append-map (lambda (multiplier)
+                        (run-benchmarks #:heap-size-multiplier multiplier
+                                        #:repetitions repetitions
+                                        #:exit-on-failure? #f))
+                      heap-size-multipliers)
+          port))))))
 
 (format #t "All tests passed.\n")
 (exit 0)

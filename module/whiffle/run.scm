@@ -20,7 +20,7 @@
   #:use-module (ice-9 textual-ports)
   #:use-module (ice-9 match)
   #:use-module (ice-9 format)
-  #:use-module ((ice-9 threads) #:select (current-processor-count))
+  #:use-module (ice-9 threads)
   #:use-module (whiffle compile)
   #:use-module (whiffle features)
   #:use-module (whiffle input)
@@ -38,8 +38,49 @@
                     options)
                ","))
 
+(define (call-with-timeout proc on-timeout secs)
+  (define lock (make-mutex))
+  (lock-mutex lock)
+  (define cvar (make-condition-variable))
+  (define cancelled? #f)
+  (define deadline
+    (+ (get-internal-real-time)
+       (* secs 1.0 internal-time-units-per-second)))
+  (define thread
+    (call-with-new-thread
+     (lambda ()
+       (lock-mutex lock)
+       (let lp ()
+         (let ((dt (- deadline (get-internal-real-time))))
+           (cond
+            (cancelled?
+             (unlock-mutex lock))
+            ((< dt 0)
+             (set! cancelled? #t)
+             (unlock-mutex lock)
+             (on-timeout))
+            (else
+             (wait-condition-variable cvar lock dt)
+             (lp))))))))
+  (unlock-mutex lock)
+  (define (cancel!)
+    (lock-mutex lock)
+    (unless cancelled?
+      (set! cancelled? #t)
+      (signal-condition-variable cvar))
+    (unlock-mutex lock))
+  (define-values results (proc))
+  (cancel!)
+  (join-thread thread)
+  (apply values results))
+
+(define (call-with-timeout* proc on-timeout timeout)
+  (if timeout
+      (call-with-timeout proc on-timeout timeout)
+      (proc)))
+
 (define* (spawn-and-read-output prog+args success failure
-                                #:key echo-output echo-error)
+                                #:key echo-output echo-error timeout)
   (match (pipe)
     ((input . output)
      (let ((pid (spawn (car prog+args) prog+args
@@ -56,11 +97,16 @@
                 (when echo-output (put-bytevector echo-output frag))
                 (cons frag (lp))))))))
        (close-port input)
-       (match (waitpid pid)
-         ((_ . 0)
-          (success str))
-         ((_ . status)
-          (failure str status)))))))
+       (let ((start (get-internal-real-time)))
+         (let lp ()
+          (match (call-with-timeout*
+                  (lambda () (waitpid pid))
+                  (lambda () (kill pid SIGTERM))
+                  timeout)
+            ((_ . 0)
+             (success str))
+            ((_ . status)
+             (failure str status)))))))))
 
 (define (precise-gc? gc)
   (and (not (string-contains gc "bdw"))
@@ -80,7 +126,8 @@
               (fail (lambda (format-string . args)
                       (apply format (current-error-port) format-string args)
                       (exit 1)))
-              check-heap-consistency?)
+              check-heap-consistency?
+              (timeout 300))
   (when (and (or output-file assemble?) (pair? args))
     (fail "unexpected args while only compiling or assembling"))
   (define c-code
@@ -158,7 +205,8 @@
                  (fail "error when running scheme: failed (~a)\n"
                        (status:exit-val status))))))
            #:echo-output (and echo-output? (current-output-port))
-           #:echo-error (and echo-error? (current-error-port))))))
+           #:echo-error (and echo-error? (current-error-port))
+           #:timeout timeout))))
       (cond
        (preserve-builddir?
         (format #t "preserving builddir; build via `make -C ~a out`\n" dir))
