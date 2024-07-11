@@ -48,6 +48,43 @@ static inline void trace_tagged_edge(void (*trace_edge)(struct gc_edge edge,
     trace_edge(edge, heap, trace_data);
 }
 
+static inline size_t object_size_for_tag(uintptr_t tag_word) {
+  if (tag_is_pair(tag_word))
+    return sizeof(Pair);
+
+  switch (tag_kind(tag_word)) {
+    case BOX_TAG:
+      return sizeof(Box);
+
+    case VECTOR_TAG:
+      return sizeof(Vector) + sizeof(Value) * tag_payload(tag_word);
+
+    case CLOSURE_TAG:
+      return sizeof(Closure) + sizeof(Value) * tag_payload(tag_word);
+
+    case STRING_TAG:
+      return sizeof(String);
+
+    case SYMBOL_TAG:
+      return sizeof(Symbol);
+
+    case THREAD_TAG:
+      return sizeof(ThreadHandle);
+
+    case BYTEVECTOR_TAG:
+      return sizeof(Bytevector) + sizeof(uint8_t) * tag_payload(tag_word);
+
+    case EPHEMERON_TAG:
+      return gc_ephemeron_size();
+
+    case EPHEMERON_TABLE_TAG:
+      return sizeof(EphemeronTable) + sizeof (Ephemeron*) * tag_payload(tag_word);
+
+    default:
+      GC_CRASH();
+  }
+}
+
 static inline void gc_trace_object(struct gc_ref ref,
                                    void (*trace_edge)(struct gc_edge edge,
                                                       struct gc_heap *heap,
@@ -59,7 +96,9 @@ static inline void gc_trace_object(struct gc_ref ref,
   // Shouldn't get here.
   GC_CRASH();
 #else
-  if (tagged_is_pair(gc_ref_heap_object(ref))) {
+  Tagged *tagged = gc_ref_heap_object(ref);
+  uintptr_t tag_word = tagged->tag;
+  if (tag_is_pair(tag_word)) {
     Pair *p = gc_ref_heap_object(ref);
     if (trace_edge) {
       trace_tagged_edge(trace_edge, gc_edge(&p->tag), heap, trace_data);
@@ -70,14 +109,14 @@ static inline void gc_trace_object(struct gc_ref ref,
     return;
   }
 
-  switch (tagged_kind(gc_ref_heap_object(ref))) {
+  switch (tag_kind(tag_word)) {
     case BOX_TAG: {
       Box *b = gc_ref_heap_object(ref);
       if (trace_edge) {
         trace_tagged_edge(trace_edge, gc_edge(&b->val), heap, trace_data);
       }
       if (size)
-        *size = sizeof(*b);
+        *size = object_size_for_tag(tag_word);
       return;
     }
 
@@ -89,7 +128,7 @@ static inline void gc_trace_object(struct gc_ref ref,
           trace_tagged_edge(trace_edge, gc_edge(&v->vals[i]), heap, trace_data);
       }
       if (size)
-        *size = sizeof(*v) + sizeof(Value) * len;
+        *size = object_size_for_tag(tag_word);
       return;
     }
 
@@ -102,7 +141,7 @@ static inline void gc_trace_object(struct gc_ref ref,
                             trace_data);
       }
       if (size)
-        *size = sizeof(*c) + sizeof(Value) * nfree;
+        *size = object_size_for_tag(tag_word);
       return;
     }
 
@@ -112,7 +151,7 @@ static inline void gc_trace_object(struct gc_ref ref,
         trace_edge(gc_edge(&str->chars), heap, trace_data);
       }
       if (size)
-        *size = sizeof(*str);
+        *size = object_size_for_tag(tag_word);
       return;
     }
 
@@ -122,14 +161,14 @@ static inline void gc_trace_object(struct gc_ref ref,
         trace_edge(gc_edge(&sym->str), heap, trace_data);
       }
       if (size)
-        *size = sizeof(*sym);
+        *size = object_size_for_tag(tag_word);
       return;
     }
 
     case THREAD_TAG: {
       ThreadHandle *thr = gc_ref_heap_object(ref);
       if (size)
-        *size = sizeof(*thr);
+        *size = object_size_for_tag(tag_word);
       return;
     }
 
@@ -137,7 +176,7 @@ static inline void gc_trace_object(struct gc_ref ref,
       Bytevector *v = gc_ref_heap_object(ref);
       size_t len = tagged_payload(&v->tag);
       if (size)
-        *size = sizeof(*v) + sizeof(uint8_t) * len;
+        *size = object_size_for_tag(tag_word);
       return;
     }
 
@@ -146,7 +185,7 @@ static inline void gc_trace_object(struct gc_ref ref,
       if (trace_edge)
         gc_trace_ephemeron(e, trace_edge, heap, trace_data);
       if (size)
-        *size = gc_ephemeron_size();
+        *size = object_size_for_tag(tag_word);
       return;
     }
 
@@ -159,7 +198,7 @@ static inline void gc_trace_object(struct gc_ref ref,
             trace_edge(gc_edge(&t->vals[i]), heap, trace_data);
       }
       if (size)
-        *size = sizeof(*t) + sizeof(Ephemeron*) * len;
+        *size = object_size_for_tag(tag_word);
       return;
     }
 
@@ -258,6 +297,12 @@ gc_atomic_forward_acquire(struct gc_atomic_forward *fwd) {
     GC_ASSERT(tag_is_forwarded(fwd->data));
     fwd->state = GC_FORWARDING_STATE_FORWARDED;
   }
+}
+
+static inline size_t
+gc_atomic_forward_object_size(struct gc_atomic_forward *fwd) {
+  GC_ASSERT(fwd->state == GC_FORWARDING_STATE_ACQUIRED);
+  return object_size_for_tag(fwd->data);
 }
 
 static inline void

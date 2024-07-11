@@ -161,12 +161,20 @@ static inline Value value_from_char(uint32_t v) {
   return IMMEDIATE_CHAR(v);
 }
 
+static inline uint8_t tag_kind(uintptr_t tag) {
+  return tag & 0xff;
+}
+
 static inline uint8_t tagged_kind(Tagged* tagged) {
-  return tagged->tag & 0xff;
+  return tag_kind(tagged->tag);
+}
+
+static inline uint8_t tag_is_pair(uintptr_t tag) {
+  return (tag & PAIR_MASK) == PAIR_TAG;
 }
 
 static inline uint8_t tagged_is_pair(Tagged* tagged) {
-  return (tagged->tag & PAIR_MASK) == PAIR_TAG;
+  return tag_is_pair(tagged->tag);
 }
 
 static inline int tagged_remembered(Tagged* tagged) {
@@ -197,8 +205,12 @@ static inline Value tagged_value(Tagged* tagged) {
   return tagged->inline_value;
 }
 
+static inline uintptr_t tag_payload(uintptr_t tag) {
+  return tag >> 8;
+}
+
 static inline uintptr_t tagged_payload(Tagged* tagged) {
-  return tagged->tag >> 8;
+  return tag_payload(tagged->tag);
 }
 
 static inline void tagged_set_payload(Tagged* tagged, uint8_t kind, uintptr_t payload) {
