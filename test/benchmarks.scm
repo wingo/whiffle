@@ -1,5 +1,5 @@
 ;;; Lightweight Scheme compiler directly to C.
-;;; Copyright (C) 2023 Andy Wingo.
+;;; Copyright (C) 2023, 2024 Andy Wingo.
 
 ;;; This library is free software; you can redistribute it and/or modify it
 ;;; under the terms of the GNU Lesser General Public License as published by
@@ -36,13 +36,14 @@
           (stack-conservative- heap-conservative-))))
 
 (define *all-collectors*
-  (cons* 'semi 'bdw (whippet-collectors)))
+  (cons* 'semi 'bdw 'pcc (whippet-collectors)))
 
 (define (default-collector-filter collector nthreads parallelism multiplier)
   (cond
    ((eq? collector 'semi)
     (and (eq? nthreads parallelism 1) (>= multiplier 2)))
    ((eq? collector 'bdw) #t)
+   ((eq? collector 'pcc) (>= multiplier 2))
    ((string-contains (symbol->string collector) "parallel") #t)
    (else (eq? parallelism 1))))
 
