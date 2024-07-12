@@ -97,6 +97,7 @@ collector to use is made at build-time:
 $ ./pre-inst-env whiffle -o foo -e '(write 42)' --gc=help
 available GC implementations:
   semi                   serial copying
+  pcc                    parallel copying
   bdw                    third-party BDW-GC parallel mark-sweep
   whippet                serial immix
   generational-whippet   whippet + in-place generations
