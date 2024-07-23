@@ -10,6 +10,9 @@
 #include "gc-ephemeron.h"
 
 #define GC_EMBEDDER_EPHEMERON_HEADER Tagged tag;
+#define GC_EMBEDDER_FINALIZER_HEADER Tagged tag;
+
+static inline size_t gc_finalizer_priority_count(void) { return 2; }
 
 static inline int
 gc_is_valid_conservative_ref_displacement(uintptr_t displacement) {
