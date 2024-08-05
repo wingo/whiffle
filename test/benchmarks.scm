@@ -43,7 +43,7 @@
    ((eq? collector 'semi)
     (and (eq? nthreads parallelism 1) (>= multiplier 2)))
    ((eq? collector 'bdw) #t)
-   ((eq? collector 'scc) (>= multiplier 2))
+   ((eq? collector 'scc) (and (>= multiplier 2) (eq? parallelism 1)))
    ((eq? collector 'pcc) (>= multiplier 2))
    ((string-contains (symbol->string collector) "parallel") #t)
    (else (eq? parallelism 1))))
