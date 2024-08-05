@@ -132,6 +132,7 @@
                           results)))))
                results `((1 1)
                          (1 ,max-parallelism)
+                         (,max-threads 1)
                          (,max-threads ,max-parallelism))))
        #(() () ())
        *all-collectors*))
