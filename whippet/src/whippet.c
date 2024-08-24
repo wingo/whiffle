@@ -247,6 +247,7 @@ add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
 
 static void
 remove_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
+  nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
   MUTATOR_EVENT(mut, mutator_removed);
   mut->heap = NULL;
   heap_lock(heap);
@@ -621,7 +622,8 @@ wait_for_mutators_to_stop(struct gc_heap *heap) {
     pthread_cond_wait(&heap->collector_cond, &heap->lock);
 }
 
-static void trace_mutator_conservative_roots_after_stop(struct gc_heap *heap) {
+static void
+trace_mutator_conservative_roots_after_stop(struct gc_heap *heap) {
   int active_mutators_already_marked = heap_should_mark_while_stopping(heap);
   if (!active_mutators_already_marked)
     for (struct gc_mutator *mut = atomic_load(&heap->mutator_trace_list);
@@ -654,10 +656,8 @@ trace_mutator_roots_after_stop(struct gc_heap *heap) {
   }
   atomic_store(&heap->mutator_trace_list, NULL);
 
-  for (struct gc_mutator *mut = heap->inactive_mutators; mut; mut = mut->next) {
-    nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
+  for (struct gc_mutator *mut = heap->inactive_mutators; mut; mut = mut->next)
     trace_mutator_roots_with_lock(mut);
-  }
 }
 
 static void
@@ -1024,7 +1024,7 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
     determine_collection_kind(heap, requested_kind);
   int is_minor = gc_kind == GC_COLLECTION_MINOR;
   HEAP_EVENT(heap, prepare_gc, gc_kind);
-  nofl_space_update_mark_patterns(nofl_space, !is_minor);
+  nofl_space_prepare_gc(nofl_space, gc_kind);
   large_object_space_start_gc(lospace, is_minor);
   gc_extern_space_start_gc(exspace, is_minor);
   resolve_ephemerons_lazily(heap);
@@ -1042,8 +1042,7 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   DEBUG("last gc yield: %f; fragmentation: %f\n", yield, fragmentation);
   detect_out_of_memory(heap);
   trace_pinned_roots_after_stop(heap);
-  if (gc_kind == GC_COLLECTION_COMPACTING)
-    nofl_space_prepare_evacuation(nofl_space);
+  nofl_space_start_gc(nofl_space, gc_kind);
   trace_roots_after_stop(heap);
   HEAP_EVENT(heap, roots_traced);
   gc_tracer_trace(&heap->tracer);
@@ -1324,6 +1323,7 @@ void gc_finish_for_thread(struct gc_mutator *mut) {
 
 static void deactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   GC_ASSERT(mut->next == NULL);
+  nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
   heap_lock(heap);
   mut->next = heap->inactive_mutators;
   heap->inactive_mutators = mut;
