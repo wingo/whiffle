@@ -100,20 +100,18 @@ available GC implementations:
   scc                    serial copying
   pcc                    parallel copying
   bdw                    third-party BDW-GC parallel mark-sweep
-  whippet                serial immix
-  generational-whippet   whippet + in-place generations
-  parallel-whippet       whippet + parallel tracing
-  stack-conservative-whippet
-                         whippet + conservative stack root finding
-  heap-conservative-whippet
-                         stack-conservative-whippet + conservative heap edges
-  stack-conservative-parallel-whippet
-  heap-conservative-parallel-whippet
-  stack-conservative-generational-whippet
-  heap-conservative-generational-whippet
-  parallel-generational-whippet
-  stack-conservative-parallel-generational-whippet
-  heap-conservative-parallel-generational-whippet
+  mmc                    serial immix
+  generational-mmc       mmc + in-place generations
+  parallel-mmc           mmc + parallel tracing
+  stack-conservative-mmc mmc + conservative stack root finding
+  heap-conservative-mmc  stack-conservative-mmc + conservative heap edges
+  stack-conservative-parallel-mmc
+  heap-conservative-parallel-mmc
+  stack-conservative-generational-mmc
+  heap-conservative-generational-mmc
+  parallel-generational-mmc
+  stack-conservative-parallel-generational-mmc
+  heap-conservative-parallel-generational-mmc
                          combinations of the above
 ```
 
@@ -172,7 +170,7 @@ directly.
 Maybe you want to choose a different GC?  Pass `--gc`:
 
 ```
-$ ./pre-inst-env whiffle --gc=whippet examples/peano-fib.scm 25
+$ ./pre-inst-env whiffle --gc=mmc examples/peano-fib.scm 25
 121393
 ```
 

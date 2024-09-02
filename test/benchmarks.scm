@@ -22,7 +22,7 @@
              (ice-9 threads)
              (ice-9 match))
 
-(define (whippet-collectors)
+(define (mmc-collectors)
   (define (apply-prefixes prefixes suffixes)
     (append suffixes
             (append-map (lambda (prefix)
@@ -30,13 +30,13 @@
                                  (symbol-append prefix suffix))
                                suffixes))
                         prefixes)))
-  (fold apply-prefixes '(whippet)
+  (fold apply-prefixes '(mmc)
         '((generational-)
           (parallel-)
           (stack-conservative- heap-conservative-))))
 
 (define *all-collectors*
-  (cons* 'semi 'bdw 'scc 'pcc (whippet-collectors)))
+  (cons* 'semi 'bdw 'scc 'pcc (mmc-collectors)))
 
 (define (default-collector-filter collector nthreads parallelism multiplier)
   (cond

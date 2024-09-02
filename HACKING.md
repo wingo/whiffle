@@ -3,8 +3,7 @@
 ## How to merge whippet
 
 Whiffle uses [whippet](https://github.com/wingo/whippet-gc/) as the
-garbage collector, both as an abstract interface to garbage collection
-facilities and as a concrete implementation of a garbage collector.
+garbage collector.
 
 Whippet is an include-only library, meant to be "vendored" into a
 project's source tree.  This is partly because it needs compile-time
