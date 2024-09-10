@@ -2,6 +2,7 @@
 #define COPY_SPACE_H
 
 #include <stdlib.h>
+#include <sys/mman.h>
 
 #include "gc-api.h"
 
@@ -522,7 +523,7 @@ static inline int
 copy_space_forward(struct copy_space *space, struct gc_edge edge,
                    struct gc_ref old_ref,
                    struct copy_space_allocator *alloc) {
-  if (space->atomic_forward)
+  if (GC_PARALLEL && space->atomic_forward)
     return copy_space_forward_atomic(space, edge, old_ref, alloc);
   return copy_space_forward_nonatomic(space, edge, old_ref, alloc);
 }
@@ -530,7 +531,7 @@ copy_space_forward(struct copy_space *space, struct gc_edge edge,
 static inline int
 copy_space_forward_if_traced(struct copy_space *space, struct gc_edge edge,
                              struct gc_ref old_ref) {
-  if (space->atomic_forward)
+  if (GC_PARALLEL && space->atomic_forward)
     return copy_space_forward_if_traced_atomic(space, edge, old_ref);
   return copy_space_forward_if_traced_nonatomic(space, edge, old_ref);
 }
@@ -541,8 +542,7 @@ copy_space_contains(struct copy_space *space, struct gc_ref ref) {
 }
 
 static inline void
-copy_space_allocator_init(struct copy_space_allocator *alloc,
-                          struct copy_space *space) {
+copy_space_allocator_init(struct copy_space_allocator *alloc) {
   memset(alloc, 0, sizeof(*alloc));
 }
 
