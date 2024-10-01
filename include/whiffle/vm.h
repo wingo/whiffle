@@ -208,10 +208,11 @@ static inline Value vm_make_closure(VM vm, Code code, size_t nfree) {
   return value_from_heap_object(ret);
 }
 
-static inline void vm_closure_init(Value closure, size_t idx, Value val) {
+static inline void vm_closure_init(VM vm, Value closure, size_t idx, Value val) {
   Closure *c = value_to_heap_object(closure);
   size_t size = tagged_payload(&c->tag);
-  gc_write_barrier(gc_ref_from_heap_object(c), sizeof(*c) + sizeof(Value)*size,
+  gc_write_barrier(vm.thread->mut, gc_ref_from_heap_object(c),
+                   sizeof(*c) + sizeof(Value)*size,
                    gc_edge(&c->free_vars[idx]), gc_ref(val.payload));
   c->free_vars[idx] = val;
 }
@@ -250,10 +251,10 @@ static inline int is_box(Value v) {
 }
 static inline int vm_is_box(Value v) { return is_box(v); }
 
-static inline void vm_box_set(Value box, Value val) {
+static inline void vm_box_set(VM vm, Value box, Value val) {
   VM_CHECK(is_box(box));
   Box *b = value_to_heap_object(box);
-  gc_write_barrier(gc_ref_from_heap_object(b), sizeof(*b),
+  gc_write_barrier(vm.thread->mut, gc_ref_from_heap_object(b), sizeof(*b),
                    gc_edge(&b->val), gc_ref(val.payload));
   b->val = val;
 }
@@ -324,18 +325,18 @@ static inline Value vm_cdr(Value pair) {
   return p->cdr;
 }
 
-static inline void vm_set_car(Value pair, Value val) {
+static inline void vm_set_car(VM vm, Value pair, Value val) {
   VM_CHECK(is_pair(pair));
   Pair *p = value_to_heap_object(pair);
-  gc_write_barrier(gc_ref_from_heap_object(p), sizeof(*p),
+  gc_write_barrier(vm.thread->mut, gc_ref_from_heap_object(p), sizeof(*p),
                    gc_edge(&p->tag), gc_ref(val.payload));
   tagged_set_value(&p->tag, PAIR_TAG, val);
 }
 
-static inline void vm_set_cdr(Value pair, Value val) {
+static inline void vm_set_cdr(VM vm, Value pair, Value val) {
   VM_CHECK(is_pair(pair));
   Pair *p = value_to_heap_object(pair);
-  gc_write_barrier(gc_ref_from_heap_object(p), sizeof(*p),
+  gc_write_barrier(vm.thread->mut, gc_ref_from_heap_object(p), sizeof(*p),
                    gc_edge(&p->cdr), gc_ref(val.payload));
   p->cdr = val;
 }
@@ -393,14 +394,15 @@ static inline Value vm_vector_ref(Value vector, Value idx) {
   return v->vals[c_idx];
 }
 
-static inline void vm_vector_set(Value vector, Value idx, Value val) {
+static inline void vm_vector_set(VM vm, Value vector, Value idx, Value val) {
   VM_CHECK(is_vector(vector));
   VM_CHECK(is_fixnum(idx));
   Vector *v = value_to_heap_object(vector);
   size_t size = tagged_payload(&v->tag);
   intptr_t c_idx = fixnum_value(idx);
   VM_CHECK(0 <= c_idx && c_idx < size);
-  gc_write_barrier(gc_ref_from_heap_object(v), sizeof(*v) + sizeof(Value)*size,
+  gc_write_barrier(vm.thread->mut, gc_ref_from_heap_object(v),
+                   sizeof(*v) + sizeof(Value)*size,
                    gc_edge(&v->vals[c_idx]), gc_ref(val.payload));
   v->vals[c_idx] = val;
 }
@@ -594,7 +596,8 @@ static inline Value vm_ephemeron_table_ref(Value table, Value idx) {
   return e ? value_from_heap_object(e) : IMMEDIATE_FALSE;
 }
 
-static inline void vm_ephemeron_table_push(Value table, Value idx, Value ephemeron) {
+static inline void vm_ephemeron_table_push(VM vm, Value table, Value idx,
+                                           Value ephemeron) {
   VM_CHECK(is_ephemeron_table(table));
   VM_CHECK(is_ephemeron(ephemeron));
   EphemeronTable *t = value_to_heap_object(table);
@@ -603,7 +606,8 @@ static inline void vm_ephemeron_table_push(Value table, Value idx, Value ephemer
   size_t size = tagged_payload(&t->tag);
   intptr_t c_idx = fixnum_value(idx);
   VM_CHECK(0 <= c_idx && c_idx < size);
-  gc_write_barrier(gc_ref_from_heap_object(t), sizeof(*t) + sizeof(Value)*size,
+  gc_write_barrier(vm.thread->mut, gc_ref_from_heap_object(t),
+                   sizeof(*t) + sizeof(Value)*size,
                    gc_edge(&t->vals[c_idx]), gc_ref_from_heap_object(e));
   gc_ephemeron_chain_push(&t->vals[c_idx], e);
 }

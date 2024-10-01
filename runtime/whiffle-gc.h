@@ -246,8 +246,8 @@ static inline void gc_object_forward_nonatomic(struct gc_ref ref,
   old->tag = make_forwarded_tag(gc_ref_heap_object(new_ref));
 }
 
-static inline void gc_object_set_remembered(struct gc_ref ref) {
-  tagged_set_remembered(gc_ref_heap_object(ref));
+static inline int gc_object_set_remembered(struct gc_ref ref) {
+  return tagged_set_remembered(gc_ref_heap_object(ref));
 }
 
 static inline int gc_object_is_remembered_nonatomic(struct gc_ref ref) {

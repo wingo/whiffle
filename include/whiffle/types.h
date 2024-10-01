@@ -181,8 +181,16 @@ static inline int tagged_remembered(Tagged* tagged) {
   return tagged->tag & REMEMBERED_FLAG;
 }
 
-static inline void tagged_set_remembered(Tagged* tagged) {
-  tagged->tag |= REMEMBERED_FLAG;
+static inline int tagged_set_remembered(Tagged* tagged) {
+  uintptr_t tag = atomic_load_explicit(&tagged->tag, memory_order_relaxed);
+  while (1) {
+    if (tag & REMEMBERED_FLAG) return 0;
+    if (atomic_compare_exchange_weak_explicit(&tagged->tag, &tag,
+                                              tag | REMEMBERED_FLAG,
+                                              memory_order_acq_rel,
+                                              memory_order_acquire))
+      return 1;
+  }
 }
 
 static inline void tagged_clear_remembered(Tagged* tagged) {

@@ -433,7 +433,7 @@
 (define (ephemeron-table-ref v i)
   (call-c-primitive/result "vm_ephemeron_table_ref" v i))
 (define (ephemeron-table-push! v i e)
-  (call-c-primitive "vm_ephemeron_table_push" v i e))
+  (call-c-primitive/write "vm_ephemeron_table_push" v i e))
 
 (define (current-microseconds)
   (call-c-primitive/result "vm_current_microseconds"))

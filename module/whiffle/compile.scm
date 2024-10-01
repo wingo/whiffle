@@ -1,5 +1,5 @@
 ;;; Lightweight Scheme compiler directly to C.
-;;; Copyright (C) 2023 Andy Wingo.
+;;; Copyright (C) 2023, 2024 Andy Wingo.
 
 ;;; Derived from (language tree-il compile-bytecode) in Guile, which is:
 ;;; Copyright (C) 2020, 2021 Free Software Foundation, Inc.
@@ -153,12 +153,12 @@
 
 (define (emit-closure-init/bound asm closure-idx free-idx val)
   (<-code asm
-          "  vm_closure_init(vm.sp[~a], ~a, vm.sp[~a]);\n"
+          "  vm_closure_init(vm, vm.sp[~a], ~a, vm.sp[~a]);\n"
           closure-idx free-idx val))
 
 (define (emit-closure-init/free asm closure-idx free-idx self-idx val)
   (<-code asm
-          "  vm_closure_init(vm.sp[~a], ~a, vm_closure_ref (vm.sp[~a], ~a));\n"
+          "  vm_closure_init(vm, vm.sp[~a], ~a, vm_closure_ref (vm.sp[~a], ~a));\n"
           closure-idx free-idx self-idx val))
 
 (define (emit-mov asm dst src)
@@ -169,9 +169,9 @@
           dst self-idx idx))
 
 (define (emit-boxed-bound-set asm bound-idx val)
-  (<-code asm "  vm_box_set(vm.sp[~a], vm.sp[~a]);\n" bound-idx val))
+  (<-code asm "  vm_box_set(vm, vm.sp[~a], vm.sp[~a]);\n" bound-idx val))
 (define (emit-boxed-free-set asm self-idx free-idx val)
-  (<-code asm "  vm_box_set(vm_closure_ref (vm.sp[~a], ~a), vm.sp[~a]);\n"
+  (<-code asm "  vm_box_set(vm, vm_closure_ref (vm.sp[~a], ~a), vm.sp[~a]);\n"
           self-idx free-idx val))
 
 (define (emit-return asm slots)
@@ -214,9 +214,9 @@
 (define (emit-cdr asm dst src)
   (<-code asm "  vm.sp[~a] = vm_cdr(vm.sp[~a]);\n" dst src))
 (define (emit-set-car asm dst src)
-  (<-code asm "  vm_set_car(vm.sp[~a], vm.sp[~a]);\n" dst src))
+  (<-code asm "  vm_set_car(vm, vm.sp[~a], vm.sp[~a]);\n" dst src))
 (define (emit-set-cdr asm dst src)
-  (<-code asm "  vm_set_cdr(vm.sp[~a], vm.sp[~a]);\n" dst src))
+  (<-code asm "  vm_set_cdr(vm, vm.sp[~a], vm.sp[~a]);\n" dst src))
 (define (emit-allocate-vector asm dst size junk-slots)
   (<-code asm "  vm.sp[~a] = vm_allocate_vector(vm_trim(vm, ~a), ~a);\n" dst junk-slots size))
 (define (emit-vector-init asm v idx val)
@@ -228,7 +228,7 @@
 (define (emit-vector-ref asm dst v idx)
   (<-code asm "  vm.sp[~a] = vm_vector_ref(vm.sp[~a], vm.sp[~a]);\n" dst v idx))
 (define (emit-vector-set asm v idx val)
-  (<-code asm "  vm_vector_set(vm.sp[~a], vm.sp[~a], vm.sp[~a]);\n" v idx val))
+  (<-code asm "  vm_vector_set(vm, vm.sp[~a], vm.sp[~a], vm.sp[~a]);\n" v idx val))
 (define (emit-string->vector asm dst str)
   (<-code asm "  vm.sp[~a] = vm_string_to_vector(vm.sp[~a]);\n" dst str))
 (define (emit-symbol->string asm dst sym)
@@ -258,6 +258,10 @@
 (define (emit-c-primcall/alloc asm prim dst args junk-slots)
   (<-code asm "  vm.sp[~a] = ~a(vm_trim(vm, ~a)~{, &vm.sp[~a]~});\n" dst prim
           junk-slots args))
+(define (emit-c-primcall/write asm prim args)
+  (<-code asm "  ~a(vm, ~a);\n" prim
+          (string-join (map (lambda (arg) (format #f "vm.sp[~a]" arg)) args)
+                       ", ")))
 (define (emit-jump-if-not-c-primcall asm prim args target)
   (<-code asm "  if (!~a(~a)) goto L~a;\n" prim
           (string-join (map (lambda (arg)
@@ -539,7 +543,8 @@
                'call-c-primitive/result
                'call-c-primitive/thread
                'call-c-primitive/alloc
-               'call-c-primitive/pred)
+               'call-c-primitive/pred
+               'call-c-primitive/write)
            ($ <const> _ (? string? c-prim))
            . args)
           (let ((exp (make-primcall src `(,name ,c-prim) (map for-value args))))
@@ -551,7 +556,8 @@
                  ('value exp)
                  ('effect (drop exp))
                  ('tail (return exp))))
-              ('call-c-primitive
+              ((or 'call-c-primitive
+                   'call-c-primitive/write)
                (match ctx
                  ('value (wrap exp))
                  ('effect exp)
@@ -697,7 +703,8 @@ lambda-case clause @var{clause}."
        (visit x))
 
       (($ <primcall> src ((or 'call-c-primitive
-                              'call-c-primitive/pred) c-prim) args)
+                              'call-c-primitive/pred
+                              'call-c-primitive/write) c-prim) args)
        (visit-args args))
       (($ <primcall> src ((or 'call-c-primitive/result
                               'call-c-primitive/thread
@@ -959,6 +966,13 @@ lambda-case clause @var{clause}."
                 (arg-offsets (reverse
                               (iota (length args) (env-sp-offset env)))))
            (emit-c-primcall asm c-prim arg-offsets)
+           (values)))
+
+        (($ <primcall> src ('call-c-primitive/write c-prim) args)
+         (let* ((env (push-args args env))
+                (arg-offsets (reverse
+                              (iota (length args) (env-sp-offset env)))))
+           (emit-c-primcall/write asm c-prim arg-offsets)
            (values)))
 
         (($ <primcall> src 'vector-init!

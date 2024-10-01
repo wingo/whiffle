@@ -1,5 +1,5 @@
 ;;; Lightweight Scheme compiler directly to C.
-;;; Copyright (C) 2023 Andy Wingo.
+;;; Copyright (C) 2023, 2024 Andy Wingo.
 
 ;;; This library is free software; you can redistribute it and/or modify it
 ;;; under the terms of the GNU Lesser General Public License as published by
@@ -172,7 +172,8 @@
             call-c-primitive/result
             call-c-primitive/thread
             call-c-primitive/alloc
-            call-c-primitive/pred)
+            call-c-primitive/pred
+            call-c-primitive/write)
   ;; Mark as non-declarative, as we should not have inlinable exports.
   #:declarative? #f)
 
@@ -181,3 +182,4 @@
 (define (call-c-primitive/thread prim . args) (error "target-only primitive"))
 (define (call-c-primitive/alloc prim . args) (error "target-only primitive"))
 (define (call-c-primitive/pred prim . args) (error "target-only primitive"))
+(define (call-c-primitive/write prim . args) (error "target-only primitive"))
