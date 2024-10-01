@@ -206,7 +206,7 @@
 (define (emit-box-ref asm dst src)
   (<-code asm "  vm.sp[~a] = vm_box_ref(vm.sp[~a]);\n" dst src))
 (define (emit-box-set asm box val)
-  (<-code asm "  vm_box_set(vm.sp[~a], vm.sp[~a]);\n" box val))
+  (<-code asm "  vm_box_set(vm, vm.sp[~a], vm.sp[~a]);\n" box val))
 (define (emit-cons asm dst a b junk-slots)
   (<-code asm "  vm.sp[~a] = vm_cons(vm_trim(vm, ~a), &vm.sp[~a], &vm.sp[~a]);\n" dst junk-slots a b))
 (define (emit-car asm dst src)
