@@ -9,11 +9,14 @@
 #define GC_IMPL 1
 #include "gc-internal.h"
 
+#include "background-thread.h"
 #include "copy-space.h"
 #include "debug.h"
 #include "gc-align.h"
 #include "gc-inline.h"
+#include "gc-platform.h"
 #include "gc-trace.h"
+#include "heap-sizer.h"
 #include "large-object-space.h"
 #if GC_PARALLEL
 #include "parallel-tracer.h"
@@ -32,6 +35,7 @@ struct gc_heap {
   pthread_cond_t collector_cond;
   pthread_cond_t mutator_cond;
   size_t size;
+  size_t total_allocated_bytes_at_last_gc;
   int collecting;
   int check_pending_ephemerons;
   struct gc_pending_ephemerons *pending_ephemerons;
@@ -45,6 +49,8 @@ struct gc_heap {
   struct gc_tracer tracer;
   double pending_ephemerons_size_factor;
   double pending_ephemerons_size_slop;
+  struct gc_background_thread *background_thread;
+  struct gc_heap_sizer sizer;
   struct gc_event_listener event_listener;
   void *event_listener_data;
 };
@@ -277,6 +283,7 @@ static void
 pause_mutator_for_collection(struct gc_heap *heap, struct gc_mutator *mut) {
   GC_ASSERT(mutators_are_stopping(heap));
   GC_ASSERT(!all_mutators_stopped(heap));
+  MUTATOR_EVENT(mut, mutator_stopping);
   MUTATOR_EVENT(mut, mutator_stopped);
   heap->paused_mutator_count++;
   if (all_mutators_stopped(heap))
@@ -290,34 +297,19 @@ pause_mutator_for_collection(struct gc_heap *heap, struct gc_mutator *mut) {
   MUTATOR_EVENT(mut, mutator_restarted);
 }
 
-static void
-pause_mutator_for_collection_with_lock(struct gc_mutator *mut) GC_NEVER_INLINE;
-static void
-pause_mutator_for_collection_with_lock(struct gc_mutator *mut) {
-  struct gc_heap *heap = mutator_heap(mut);
-  GC_ASSERT(mutators_are_stopping(heap));
-  MUTATOR_EVENT(mut, mutator_stopping);
-  pause_mutator_for_collection(heap, mut);
-}
+static void resize_heap(struct gc_heap *heap, size_t new_size) {
+  if (new_size == heap->size)
+    return;
+  DEBUG("------ resizing heap\n");
+  DEBUG("------ old heap size: %zu bytes\n", heap->size);
+  DEBUG("------ new heap size: %zu bytes\n", new_size);
+  if (new_size < heap->size)
+    copy_space_shrink(heap_copy_space(heap), heap->size - new_size);
+  else
+    copy_space_expand(heap_copy_space(heap), new_size - heap->size);
 
-static void pause_mutator_for_collection_without_lock(struct gc_mutator *mut) GC_NEVER_INLINE;
-static void pause_mutator_for_collection_without_lock(struct gc_mutator *mut) {
-  struct gc_heap *heap = mutator_heap(mut);
-  GC_ASSERT(mutators_are_stopping(heap));
-  MUTATOR_EVENT(mut, mutator_stopping);
-  copy_space_allocator_finish(&mut->allocator, heap_copy_space(heap));
-  heap_lock(heap);
-  pause_mutator_for_collection(heap, mut);
-  heap_unlock(heap);
-}
-
-static inline void maybe_pause_mutator_for_collection(struct gc_mutator *mut) {
-  while (mutators_are_stopping(mutator_heap(mut)))
-    pause_mutator_for_collection_without_lock(mut);
-}
-
-static int maybe_grow_heap(struct gc_heap *heap) {
-  return 0;
+  heap->size = new_size;
+  HEAP_EVENT(heap, heap_resized, new_size);
 }
 
 static void visit_root_edge(struct gc_edge edge, struct gc_heap *heap,
@@ -375,6 +367,7 @@ static void collect(struct gc_mutator *mut) {
   struct copy_space *copy_space = heap_copy_space(heap);
   struct large_object_space *lospace = heap_large_object_space(heap);
   struct gc_extern_space *exspace = heap_extern_space(heap);
+  uint64_t start_ns = gc_platform_monotonic_nanoseconds();
   MUTATOR_EVENT(mut, mutator_cause_gc);
   DEBUG("start collect #%ld:\n", heap->count);
   HEAP_EVENT(heap, requesting_stop);
@@ -383,6 +376,9 @@ static void collect(struct gc_mutator *mut) {
   wait_for_mutators_to_stop(heap);
   HEAP_EVENT(heap, mutators_stopped);
   HEAP_EVENT(heap, prepare_gc, GC_COLLECTION_COMPACTING);
+  uint64_t *counter_loc = &heap->total_allocated_bytes_at_last_gc;
+  copy_space_add_to_allocation_counter(copy_space, counter_loc);
+  large_object_space_add_to_allocation_counter(lospace, counter_loc);
   copy_space_flip(copy_space);
   large_object_space_start_gc(lospace, 0);
   gc_extern_space_start_gc(exspace, 0);
@@ -406,9 +402,12 @@ static void collect(struct gc_mutator *mut) {
   heap_reset_large_object_pages(heap, lospace->live_pages_at_last_collection);
   size_t live_size = (copy_space->allocated_bytes_at_last_gc +
                       large_object_space_size_at_last_collection(lospace));
+  uint64_t pause_ns = gc_platform_monotonic_nanoseconds() - start_ns;
   HEAP_EVENT(heap, live_data_size, live_size);
-  maybe_grow_heap(heap);
-  if (!copy_space_page_out_blocks_until_memory_released(copy_space)) {
+  gc_heap_sizer_on_gc(heap->sizer, heap->size, live_size, pause_ns,
+                      resize_heap);
+  if (!copy_space_page_out_blocks_until_memory_released(copy_space)
+      && heap->sizer.policy == GC_HEAP_SIZE_FIXED) {
     fprintf(stderr, "ran out of space, heap size %zu (%zu slabs)\n",
             heap->size, copy_space->nslabs);
     GC_CRASH();
@@ -423,7 +422,7 @@ static void trigger_collection(struct gc_mutator *mut) {
   heap_lock(heap);
   long epoch = heap->count;
   while (mutators_are_stopping(heap))
-    pause_mutator_for_collection_with_lock(mut);
+    pause_mutator_for_collection(heap, mut);
   if (epoch == heap->count)
     collect(mut);
   heap_unlock(heap);
@@ -480,10 +479,28 @@ void* gc_allocate_pointerless(struct gc_mutator *mut, size_t size) {
   return gc_allocate(mut, size);
 }
 
-void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
-                             struct gc_edge edge, struct gc_ref new_val) {
+void gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
+  GC_CRASH();
 }
 
+void gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
+                           size_t obj_size, struct gc_edge edge,
+                           struct gc_ref new_val) {
+}
+
+int* gc_safepoint_flag_loc(struct gc_mutator *mut) {
+  return &mutator_heap(mut)->collecting;
+}
+
+void gc_safepoint_slow(struct gc_mutator *mut) {
+  struct gc_heap *heap = mutator_heap(mut);
+  copy_space_allocator_finish(&mut->allocator, heap_copy_space(heap));
+  heap_lock(heap);
+  while (mutators_are_stopping(mutator_heap(mut)))
+    pause_mutator_for_collection(heap, mut);
+  heap_unlock(heap);
+}
+  
 struct gc_ephemeron* gc_allocate_ephemeron(struct gc_mutator *mut) {
   return gc_allocate(mut, gc_ephemeron_size());
 }
@@ -560,6 +577,22 @@ int gc_options_parse_and_set(struct gc_options *options, int option,
   return gc_common_options_parse_and_set(&options->common, option, value);
 }
 
+static uint64_t allocation_counter_from_thread(struct gc_heap *heap) {
+  uint64_t ret = heap->total_allocated_bytes_at_last_gc;
+  if (pthread_mutex_trylock(&heap->lock)) return ret;
+  copy_space_add_to_allocation_counter(heap_copy_space(heap), &ret);
+  large_object_space_add_to_allocation_counter(heap_large_object_space(heap),
+                                               &ret);
+  pthread_mutex_unlock(&heap->lock);
+  return ret;
+}
+
+static void set_heap_size_from_thread(struct gc_heap *heap, size_t size) {
+  if (pthread_mutex_trylock(&heap->lock)) return;
+  resize_heap(heap, size);
+  pthread_mutex_unlock(&heap->lock);
+}
+
 static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
   // *heap is already initialized to 0.
 
@@ -581,6 +614,12 @@ static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
   if (!heap->finalizer_state)
     GC_CRASH();
 
+  heap->background_thread = gc_make_background_thread();
+  heap->sizer = gc_make_heap_sizer(heap, &options->common,
+                                   allocation_counter_from_thread,
+                                   set_heap_size_from_thread,
+                                   heap->background_thread);
+
   return 1;
 }
 
@@ -596,11 +635,6 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   GC_ASSERT_EQ(gc_allocator_allocation_limit_offset(),
                offsetof(struct copy_space_allocator, limit));
 
-  if (options->common.heap_size_policy != GC_HEAP_SIZE_FIXED) {
-    fprintf(stderr, "fixed heap size is currently required\n");
-    return 0;
-  }
-
   *heap = calloc(1, sizeof(struct gc_heap));
   if (!*heap) GC_CRASH();
 
@@ -613,7 +647,8 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
 
   struct copy_space *space = heap_copy_space(*heap);
   int atomic_forward = options->common.parallelism > 1;
-  if (!copy_space_init(space, (*heap)->size, atomic_forward)) {
+  if (!copy_space_init(space, (*heap)->size, atomic_forward,
+                       (*heap)->background_thread)) {
     free(*heap);
     *heap = NULL;
     return 0;
@@ -625,6 +660,9 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
   *mut = calloc(1, sizeof(struct gc_mutator));
   if (!*mut) GC_CRASH();
   add_mutator(*heap, *mut);
+
+  gc_background_thread_start((*heap)->background_thread);
+
   return 1;
 }
 

@@ -77,13 +77,15 @@ visitor function on all outgoing edges in an object.  It also includes a
 of an object.  `trace_edge` and `size` may be `NULL`, in which case no
 tracing or size computation should be performed.
 
-### Tracing ephemerons
+### Tracing ephemerons and finalizers
 
 Most kinds of GC-managed object are defined by the program, but the GC
-itself has support for a specific object kind: ephemerons.  If the
-program allocates ephemerons, it should trace them in the
-`gc_trace_object` function by calling `gc_trace_ephemeron` from
-[`gc-ephemerons.h`](../api/gc-ephemerons.h).
+itself has support for two specific object kind: ephemerons and
+finalizers.  If the program allocates ephemerons, it should trace them
+in the `gc_trace_object` function by calling `gc_trace_ephemeron` from
+[`gc-ephemerons.h`](../api/gc-ephemerons.h).  Likewise if the program
+allocates finalizers, it should trace them by calling
+`gc_trace_finalizer` from [`gc-finalizer.h`](../api/gc-finalizer.h).
 
 ### Remembered-set bits
 
@@ -299,6 +301,12 @@ We do this by including the `gc-embedder-api.h` implementation, via
 $(COMPILE) -include foo-embedder.h -o gc-ephemeron.o -c gc-ephemeron.c
 ```
 
+As for ephemerons, finalizers also have their own compilation unit.
+
+```
+$(COMPILE) -include foo-embedder.h -o gc-finalizer.o -c gc-finalizer.c
+```
+
 #### Compile-time options
 
 There are a number of pre-processor definitions that can parameterize
@@ -460,15 +468,16 @@ defined for all collectors:
  * `GC_OPTION_HEAP_SIZE_MULTIPLIER`: For growable heaps, the target heap
    multiplier.  A heap multiplier of 2.5 means that for 100 MB of live
    data, the heap should be 250 MB.
- * `GC_OPTION_HEAP_FRUGALITY`: Something that will be used in adaptive
-   heaps, apparently!  Not yet implemented.
+ * `GC_OPTION_HEAP_EXPANSIVENESS`: For adaptive heap sizing, an
+   indication of how much free space will be given to heaps, as a
+   proportion of the square root of the live data size.
  * `GC_OPTION_PARALLELISM`: How many threads to devote to collection
    tasks during GC pauses.  By default, the current number of
    processors, with a maximum of 8.
 
 You can set these options via `gc_option_set_int` and so on; see
 [`gc-options.h`](../api/gc-options.h).  Or, you can parse options from
-trings: `heap-size-policy`, `heap-size`, `maximum-heap-size`, and so
+strings: `heap-size-policy`, `heap-size`, `maximum-heap-size`, and so
 on.  Use `gc_option_from_string` to determine if a string is really an
 option.  Use `gc_option_parse_and_set` to parse a value for an option.
 Use `gc_options_parse_and_set_many` to parse a number of comma-delimited
@@ -522,12 +531,38 @@ temporarily mark itself as inactive by trampolining through
 for, for example, system calls that might block.  Periodic safepoints is
 better for code that is active but not allocating.
 
-Thing is, though, `gc_safepoint` is not yet implemented :)  It will be,
-though!
-
 Also, the BDW collector actually uses pre-emptive safepoints: it stops
-threads via POSIX signals.  `gc_safepoint` is (or will be) a no-op with
-BDW.
+threads via POSIX signals.  `gc_safepoint` is a no-op with BDW.
+
+Embedders can inline safepoint checks.  If
+`gc_cooperative_safepoint_kind()` is `GC_COOPERATIVE_SAFEPOINT_NONE`,
+then the collector doesn't need safepoints, as is the case for `bdw`
+which uses signals and `semi` which is single-threaded.  If it is
+`GC_COOPERATIVE_SAFEPOINT_HEAP_FLAG`, then calling
+`gc_safepoint_flag_loc` on a mutator will return the address of an `int`
+in memory, which if nonzero when loaded using relaxed atomics indicates
+that the mutator should call `gc_safepoint_slow`.  Similarly for
+`GC_COOPERATIVE_SAFEPOINT_MUTATOR_FLAG`, except that the address is
+per-mutator rather than global.
+
+### Pinning
+
+Sometimes a mutator or embedder would like to tell the collector to not
+move a particular object.  This can happen for example during a foreign
+function call, or if the embedder allows programs to access the address
+of an object, for example to compute an identity hash code.  To support
+this use case, some Whippet collectors allow the embedder to *pin*
+objects.  Call `gc_pin_object` to prevent the collector from relocating
+an object.
+
+Pinning is currently supported by the `bdw` collector, which never moves
+objects, and also by the various `mmc` collectors, which can move
+objects that have no inbound conservative references.
+
+Pinning is not supported on `semi` or `pcc`.
+
+Call `gc_can_pin_objects` to determine whether the current collector can
+pin objects.
 
 ### Statistics
 
@@ -668,4 +703,49 @@ An ephemeron association can be removed via `gc_ephemeron_mark_dead`.
 
 ### Finalizers
 
-Not yet implemented!
+A finalizer allows the embedder to be notified when an object becomes
+unreachable.
+
+A finalizer has a priority.  When the heap is created, the embedder
+should declare how many priorities there are.  Lower-numbered priorities
+take precedence; if an object has a priority-0 finalizer outstanding,
+that will prevent any finalizer at level 1 (or 2, ...)  from firing
+until no priority-0 finalizer remains.
+
+Call `gc_attach_finalizer`, from `gc-finalizer.h`, to attach a finalizer
+to an object.
+
+A finalizer also references an associated GC-managed closure object.
+A finalizer's reference to the closure object is strong:  if a
+finalizer's closure closure references its finalizable object,
+directly or indirectly, the finalizer will never fire.
+
+When an object with a finalizer becomes unreachable, it is added to a
+queue.  The embedder can call `gc_pop_finalizable` to get the next
+finalizable object and its associated closure.  At that point the
+embedder can do anything with the object, including keeping it alive.
+Ephemeron associations will still be present while the finalizable
+object is live.  Note however that any objects referenced by the
+finalizable object may themselves be already finalized; finalizers are
+enqueued for objects when they become unreachable, which can concern
+whole subgraphs of objects at once.
+
+The usual way for an embedder to know when the queue of finalizable
+object is non-empty is to call `gc_set_finalizer_callback` to
+provide a function that will be invoked when there are pending
+finalizers.
+
+Arranging to call `gc_pop_finalizable` and doing something with the
+finalizable object and closure is the responsibility of the embedder.
+The embedder's finalization action can end up invoking arbitrary code,
+so unless the embedder imposes some kind of restriction on what
+finalizers can do, generally speaking finalizers should be run in a
+dedicated thread instead of recursively from within whatever mutator
+thread caused GC.  Setting up such a thread is the responsibility of the
+mutator.  `gc_pop_finalizable` is thread-safe, allowing multiple
+finalization threads if that is appropriate.
+
+`gc_allocate_finalizer` returns a finalizer, which is a fresh GC-managed
+heap object.  The mutator should then directly attach it to an object
+using `gc_finalizer_attach`.  When the finalizer is fired, it becomes
+available to the mutator via `gc_pop_finalizable`.

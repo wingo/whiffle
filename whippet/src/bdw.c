@@ -127,6 +127,10 @@ void* gc_allocate_pointerless(struct gc_mutator *mut,
   return GC_malloc_atomic(size);
 }
 
+void gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
+  // Nothing to do.
+}
+
 void gc_collect(struct gc_mutator *mut,
                 enum gc_collection_kind requested_kind) {
   switch (requested_kind) {
@@ -145,9 +149,13 @@ void gc_collect(struct gc_mutator *mut,
   }
 }
 
-void gc_write_barrier_extern(struct gc_ref obj, size_t obj_size,
-                             struct gc_edge edge, struct gc_ref new_val) {
+void gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
+                           size_t obj_size, struct gc_edge edge,
+                           struct gc_ref new_val) {
 }
+
+int* gc_safepoint_flag_loc(struct gc_mutator *mut) { GC_CRASH(); }
+void gc_safepoint_slow(struct gc_mutator *mut) { GC_CRASH(); }
 
 struct bdw_mark_state {
   struct GC_ms_entry *mark_stack_ptr;
