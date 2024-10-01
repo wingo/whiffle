@@ -1,5 +1,5 @@
 ;;; Lightweight Scheme compiler directly to C.
-;;; Copyright (C) 2023 Andy Wingo.
+;;; Copyright (C) 2023, 2024 Andy Wingo.
 
 ;;; Derived from (language tree-il compile-bytecode) in Guile, which is:
 ;;; Copyright (C) 2020, 2021 Free Software Foundation, Inc.
@@ -30,7 +30,8 @@
    (add-interesting-primitive! 'call-c-primitive/result)
    (add-interesting-primitive! 'call-c-primitive/thread)
    (add-interesting-primitive! 'call-c-primitive/alloc)
-   (add-interesting-primitive! 'call-c-primitive/pred)))
+   (add-interesting-primitive! 'call-c-primitive/pred)
+   (add-interesting-primitive! 'call-c-primitive/write)))
 
 (define (make-fresh-whiffle-module)
   (let ((mod (make-fresh-user-module)))
