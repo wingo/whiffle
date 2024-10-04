@@ -44,6 +44,7 @@ struct gc_field_set_writer {
 static void
 gc_edge_buffer_list_push(struct gc_edge_buffer_list *list,
                          struct gc_edge_buffer *buf) {
+  GC_ASSERT(!buf->next);
   struct gc_edge_buffer *next =
     atomic_load_explicit(&list->head, memory_order_relaxed);
   do {
@@ -72,6 +73,7 @@ static void
 gc_edge_buffer_stack_push(struct gc_edge_buffer_stack *stack,
                           struct gc_edge_buffer *buf,
                           const struct gc_lock *lock) {
+  GC_ASSERT(!buf->next);
   buf->next = stack->list.head;
   stack->list.head = buf;
 }
@@ -162,15 +164,15 @@ gc_field_set_clear(struct gc_field_set *set,
 }
 
 static inline void
-gc_field_set_trace_edge_buffer(struct gc_field_set *set,
+gc_field_set_visit_edge_buffer(struct gc_field_set *set,
                                struct gc_edge_buffer *buf,
-                               void (*tracer_visit)(struct gc_edge,
-                                                    struct gc_heap*,
-                                                    void *data),
+                               void (*visit)(struct gc_edge,
+                                             struct gc_heap*,
+                                             void *data),
                                struct gc_heap *heap,
-                               struct gc_trace_worker *worker) {
+                               void *data) {
   for (size_t i = 0; i < buf->size; i++)
-    tracer_visit(buf->edges[i], heap, worker);
+    visit(buf->edges[i], heap, data);
 }
 
 static void

@@ -121,8 +121,6 @@ gc_trace_worker_call_with_data(void (*f)(struct gc_tracer *tracer,
 static inline int
 do_trace(struct gc_heap *heap, struct gc_edge edge, struct gc_ref ref,
          struct gc_trace_worker_data *data) {
-  if (!gc_ref_is_heap_object(ref))
-    return 0;
   if (GC_LIKELY(nofl_space_contains(heap_nofl_space(heap), ref)))
     return nofl_space_evacuate_or_mark_object(heap_nofl_space(heap), edge, ref,
                                               &data->allocator);
@@ -137,6 +135,9 @@ static inline int
 trace_edge(struct gc_heap *heap, struct gc_edge edge,
            struct gc_trace_worker_data *data) {
   struct gc_ref ref = gc_edge_ref(edge);
+  if (gc_ref_is_null(ref) || gc_ref_is_immediate(ref))
+    return 0;
+
   int is_new = do_trace(heap, edge, ref, data);
 
   if (is_new &&
@@ -150,9 +151,10 @@ trace_edge(struct gc_heap *heap, struct gc_edge edge,
 int
 gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
   struct gc_ref ref = gc_edge_ref(edge);
-  if (!gc_ref_is_heap_object(ref))
-    return 0;
-
+  GC_ASSERT(!gc_ref_is_null(ref));
+  if (gc_ref_is_immediate(ref))
+    return 1;
+  GC_ASSERT(gc_ref_is_heap_object(ref));
   struct nofl_space *nofl_space = heap_nofl_space(heap);
   if (GC_LIKELY(nofl_space_contains(nofl_space, ref)))
     return nofl_space_forward_or_mark_if_traced(nofl_space, edge, ref);
@@ -271,11 +273,11 @@ static inline struct gc_ref
 trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
                        int possibly_interior) {
   struct gc_ref ret = do_trace_conservative_ref(heap, ref, possibly_interior);
-
-  if (gc_ref_is_heap_object(ret) &&
-      GC_UNLIKELY(atomic_load_explicit(&heap->check_pending_ephemerons,
-                                       memory_order_relaxed)))
-    gc_resolve_pending_ephemerons(ret, heap);
+  if (!gc_ref_is_null(ret)) {
+    if (GC_UNLIKELY(atomic_load_explicit(&heap->check_pending_ephemerons,
+                                         memory_order_relaxed)))
+      gc_resolve_pending_ephemerons(ret, heap);
+  }
 
   return ret;
 }
@@ -286,7 +288,7 @@ tracer_trace_conservative_ref(struct gc_conservative_ref ref,
                               struct gc_trace_worker *worker,
                               int possibly_interior) {
   struct gc_ref resolved = trace_conservative_ref(heap, ref, possibly_interior);
-  if (gc_ref_is_heap_object(resolved))
+  if (!gc_ref_is_null(resolved))
     gc_trace_worker_enqueue(worker, resolved);
 }
 
@@ -367,7 +369,7 @@ trace_root(struct gc_root root, struct gc_heap *heap,
     tracer_visit(root.edge, heap, worker);
     break;
   case GC_ROOT_KIND_EDGE_BUFFER:
-    gc_field_set_trace_edge_buffer(&heap->remembered_set, root.edge_buffer,
+    gc_field_set_visit_edge_buffer(&heap->remembered_set, root.edge_buffer,
                                    tracer_visit, heap, worker);
     break;
   default:
@@ -603,7 +605,7 @@ enqueue_conservative_roots(uintptr_t low, uintptr_t high,
                      gc_root_conservative_edges(low, high, *possibly_interior));
 }
 
-static void
+static int
 enqueue_mutator_conservative_roots(struct gc_heap *heap) {
   if (gc_has_mutator_conservative_roots()) {
     int possibly_interior = gc_mutator_conservative_roots_may_be_interior();
@@ -612,23 +614,28 @@ enqueue_mutator_conservative_roots(struct gc_heap *heap) {
          mut = mut->next)
       gc_stack_visit(&mut->stack, enqueue_conservative_roots, heap,
                      &possibly_interior);
+    return 1;
   }
+  return 0;
 }
 
-static void
+static int
 enqueue_global_conservative_roots(struct gc_heap *heap) {
   if (gc_has_global_conservative_roots()) {
     int possibly_interior = 0;
     gc_platform_visit_global_conservative_roots
       (enqueue_conservative_roots, heap, &possibly_interior);
+    return 1;
   }
+  return 0;
 }
 
-static void
+static int
 enqueue_pinned_roots(struct gc_heap *heap) {
   GC_ASSERT(!heap_nofl_space(heap)->evacuating);
-  enqueue_mutator_conservative_roots(heap);
-  enqueue_global_conservative_roots(heap);
+  int has_pinned_roots = enqueue_mutator_conservative_roots(heap);
+  has_pinned_roots |= enqueue_global_conservative_roots(heap);
+  return has_pinned_roots;
 }
 
 static void
@@ -655,6 +662,7 @@ forget_remembered_edge(struct gc_edge edge, struct gc_heap *heap) {
 
 static void
 clear_remembered_set(struct gc_heap *heap) {
+  if (!GC_GENERATIONAL) return;
   gc_field_set_clear(&heap->remembered_set, forget_remembered_edge, heap);
   large_object_space_clear_remembered_edges(heap_large_object_space(heap));
 }
@@ -755,9 +763,8 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind,
   size_t live_bytes = heap->size * (1.0 - yield);
   HEAP_EVENT(heap, live_data_size, live_bytes);
   DEBUG("last gc yield: %f; fragmentation: %f\n", yield, fragmentation);
-  enqueue_pinned_roots(heap);
   // Eagerly trace pinned roots if we are going to relocate objects.
-  if (gc_kind == GC_COLLECTION_COMPACTING)
+  if (enqueue_pinned_roots(heap) && gc_kind == GC_COLLECTION_COMPACTING)
     gc_tracer_trace_roots(&heap->tracer);
   // Process the rest of the roots in parallel.  This heap event should probably
   // be removed, as there is no clear cutoff time.
@@ -889,8 +896,8 @@ gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
   // Otherwise if it's a large or external object, it won't move.
 }
 
-int gc_object_is_old_generation_slow(struct gc_mutator *mut,
-                                     struct gc_ref obj) {
+int
+gc_object_is_old_generation_slow(struct gc_mutator *mut, struct gc_ref obj) {
   if (!GC_GENERATIONAL)
     return 0;
 
@@ -910,7 +917,7 @@ void
 gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
                       size_t obj_size, struct gc_edge edge,
                       struct gc_ref new_val) {
-  GC_ASSERT(gc_ref_is_heap_object(new_val));
+  GC_ASSERT(!gc_ref_is_null(new_val));
   if (!GC_GENERATIONAL) return;
   if (gc_object_is_old_generation_slow(mut, new_val))
     return;

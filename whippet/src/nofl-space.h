@@ -925,7 +925,7 @@ nofl_space_contains(struct nofl_space *space, struct gc_ref ref) {
 
 static inline int
 nofl_space_contains_edge(struct nofl_space *space, struct gc_edge edge) {
-  return nofl_space_contains_address(space, (uintptr_t)gc_edge_loc(edge));
+  return nofl_space_contains_address(space, gc_edge_address(edge));
 }  
 
 static inline int
@@ -939,13 +939,13 @@ nofl_space_is_survivor(struct nofl_space *space, struct gc_ref ref) {
 
 static uint8_t*
 nofl_field_logged_byte(struct gc_edge edge) {
-  return nofl_metadata_byte_for_addr((uintptr_t)gc_edge_loc(edge));
+  return nofl_metadata_byte_for_addr(gc_edge_address(edge));
 }
 
 static uint8_t
 nofl_field_logged_bit(struct gc_edge edge) {
   GC_ASSERT_EQ(sizeof(uintptr_t) * 2, NOFL_GRANULE_SIZE);
-  size_t field = ((uintptr_t)gc_edge_loc(edge)) / sizeof(uintptr_t);
+  size_t field = gc_edge_address(edge) / sizeof(uintptr_t);
   return NOFL_METADATA_BYTE_LOGGED_0 << (field % 2);
 }
 
@@ -972,10 +972,18 @@ nofl_space_forget_edge(struct nofl_space *space, struct gc_edge edge) {
   GC_ASSERT(nofl_space_contains_edge(space, edge));
   GC_ASSERT(GC_GENERATIONAL);
   uint8_t* loc = nofl_field_logged_byte(edge);
-  // Clear both logged bits.
-  uint8_t bits = NOFL_METADATA_BYTE_LOGGED_0 | NOFL_METADATA_BYTE_LOGGED_1;
-  uint8_t byte = atomic_load_explicit(loc, memory_order_acquire);
-  atomic_store_explicit(loc, byte & ~bits, memory_order_release);
+  if (GC_DEBUG) {
+    pthread_mutex_lock(&space->lock);
+    uint8_t bit = nofl_field_logged_bit(edge);
+    GC_ASSERT(*loc & bit);
+    *loc &= ~bit;
+    pthread_mutex_unlock(&space->lock);
+  } else {
+    // In release mode, race to clear both bits at once.
+    uint8_t byte = atomic_load_explicit(loc, memory_order_relaxed);
+    byte &= ~(NOFL_METADATA_BYTE_LOGGED_0 | NOFL_METADATA_BYTE_LOGGED_1);
+    atomic_store_explicit(loc, byte, memory_order_relaxed);
+  }
 }
 
 static void
@@ -1400,11 +1408,8 @@ nofl_space_should_evacuate(struct nofl_space *space, uint8_t metadata_byte,
 
 static inline int
 nofl_space_set_mark(struct nofl_space *space, uint8_t *metadata, uint8_t byte) {
-  // Clear logged bits when we mark: after marking, there will be no
-  // young objects.
   uint8_t mask = NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_MARK_0
-    | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2
-    | NOFL_METADATA_BYTE_LOGGED_0 | NOFL_METADATA_BYTE_LOGGED_1;
+    | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2;
   atomic_store_explicit(metadata,
                         (byte & ~mask) | space->marked_mask,
                         memory_order_relaxed);
@@ -1437,8 +1442,9 @@ nofl_space_pin_object(struct nofl_space *space, struct gc_ref ref) {
                                                   memory_order_acquire));
 }
 
-static inline void
-clear_logged_bits_in_evacuated_object(uint8_t *metadata, size_t count) {
+static inline uint8_t
+clear_logged_bits_in_evacuated_object(uint8_t head, uint8_t *metadata,
+                                      size_t count) {
   // On a major collection, it could be that we evacuate an object that
   // has one or more fields in the old-to-new remembered set.  Because
   // the young generation is empty after a major collection, we know the
@@ -1456,10 +1462,11 @@ clear_logged_bits_in_evacuated_object(uint8_t *metadata, size_t count) {
   // never evacuate an object in the remembered set, because old objects
   // aren't traced during a minor collection.
   uint8_t mask = NOFL_METADATA_BYTE_LOGGED_0 | NOFL_METADATA_BYTE_LOGGED_1;
-  for (size_t i = 0; i < count; i++) {
+  for (size_t i = 1; i < count; i++) {
     if (metadata[i] & mask)
       metadata[i] &= ~mask;
   }    
+  return head & ~mask;
 }
 
 static inline int
@@ -1483,7 +1490,7 @@ nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
     size_t object_granules = nofl_space_live_object_granules(metadata);
     struct gc_ref new_ref = nofl_evacuation_allocate(evacuate, space,
                                                      object_granules);
-    if (gc_ref_is_heap_object(new_ref)) {
+    if (!gc_ref_is_null(new_ref)) {
       // Copy object contents before committing, as we don't know what
       // part of the object (if any) will be overwritten by the
       // commit.
@@ -1495,7 +1502,8 @@ nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
       uint8_t *new_metadata = nofl_metadata_byte_for_object(new_ref);
       memcpy(new_metadata + 1, metadata + 1, object_granules - 1);
       if (GC_GENERATIONAL)
-        clear_logged_bits_in_evacuated_object(new_metadata, object_granules);
+        byte = clear_logged_bits_in_evacuated_object(byte, new_metadata,
+                                                     object_granules);
       gc_edge_update(edge, new_ref);
       return nofl_space_set_nonempty_mark(space, new_metadata, byte,
                                           new_ref);
