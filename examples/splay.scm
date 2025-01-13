@@ -214,11 +214,11 @@
                 (set-node-left! cur-right current)
                 (cond
                  ((node-right cur-right)
-                  ;; Link left.
                   (set-node-right! left cur-right)
                   (lp (node-right cur-right) cur-right right))
                  (else (reassemble cur-right left right))))
                (else
+                ;; Link left.
                 (set-node-right! left current)
                 (lp cur-right current right)))))
            (else
