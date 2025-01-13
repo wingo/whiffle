@@ -57,8 +57,6 @@ typedef struct EphemeronTable { Tagged tag; Ephemeron *vals[]; } EphemeronTable;
 #define EPHEMERON_TABLE_TAG ((uintptr_t)0x2d) /* 0b0010_1101 */
 #define BUSY_TAG         ((uintptr_t)-1)   /* all 1's */
 
-#define REMEMBERED_FLAG  ((uintptr_t)0x80) /* 0b1000_0000 */
-
 #define STATIC_CODE(label) ((uintptr_t)&label)
 
 #define STATIC_PAIR(a, b)       {{a | PAIR_TAG}, {b}}
@@ -175,26 +173,6 @@ static inline uint8_t tag_is_pair(uintptr_t tag) {
 
 static inline uint8_t tagged_is_pair(Tagged* tagged) {
   return tag_is_pair(tagged->tag);
-}
-
-static inline int tagged_remembered(Tagged* tagged) {
-  return tagged->tag & REMEMBERED_FLAG;
-}
-
-static inline int tagged_set_remembered(Tagged* tagged) {
-  uintptr_t tag = atomic_load_explicit(&tagged->tag, memory_order_relaxed);
-  while (1) {
-    if (tag & REMEMBERED_FLAG) return 0;
-    if (atomic_compare_exchange_weak_explicit(&tagged->tag, &tag,
-                                              tag | REMEMBERED_FLAG,
-                                              memory_order_acq_rel,
-                                              memory_order_acquire))
-      return 1;
-  }
-}
-
-static inline void tagged_clear_remembered(Tagged* tagged) {
-  tagged->tag &= ~(uintptr_t)REMEMBERED_FLAG;
 }
 
 static inline int tag_is_forwarded(uintptr_t tag) {

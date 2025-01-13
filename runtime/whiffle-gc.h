@@ -246,18 +246,6 @@ static inline void gc_object_forward_nonatomic(struct gc_ref ref,
   old->tag = make_forwarded_tag(gc_ref_heap_object(new_ref));
 }
 
-static inline int gc_object_set_remembered(struct gc_ref ref) {
-  return tagged_set_remembered(gc_ref_heap_object(ref));
-}
-
-static inline int gc_object_is_remembered_nonatomic(struct gc_ref ref) {
-  return tagged_remembered(gc_ref_heap_object(ref));
-}
-
-static inline void gc_object_clear_remembered_nonatomic(struct gc_ref ref) {
-  return tagged_clear_remembered(gc_ref_heap_object(ref));
-}
-
 static inline struct gc_atomic_forward
 gc_atomic_forward_begin(struct gc_ref ref) {
   Tagged *obj = gc_ref_heap_object(ref);
@@ -284,7 +272,8 @@ gc_atomic_forward_retry_busy(struct gc_atomic_forward *fwd) {
     fwd->data = observed;
     return 1;
   }
-  fwd->state = GC_FORWARDING_STATE_ABORTED;
+  fwd->state = GC_FORWARDING_STATE_NOT_FORWARDED;
+  fwd->data = observed;
   return 1;
 }
   
@@ -313,7 +302,7 @@ gc_atomic_forward_abort(struct gc_atomic_forward *fwd) {
   GC_ASSERT(fwd->state == GC_FORWARDING_STATE_ACQUIRED);
   Tagged *obj = gc_ref_heap_object(fwd->ref);
   atomic_store_explicit(&obj->tag, fwd->data, memory_order_release);
-  fwd->state = GC_FORWARDING_STATE_ABORTED;
+  fwd->state = GC_FORWARDING_STATE_NOT_FORWARDED;
 }
 
 static inline void
