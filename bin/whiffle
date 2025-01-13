@@ -3,7 +3,7 @@
 exec "${GUILE:-guile}" "$0" "$@"
 !#
 ;;; Lightweight Scheme compiler directly to C. -*- scheme -*-
-;;; Copyright (C) 2023, 2024 Andy Wingo.
+;;; Copyright (C) 2023, 2024, 2025 Andy Wingo.
 
 ;;; This library is free software; you can redistribute it and/or modify
 ;;; it under the terms of the GNU Lesser General Public License as
@@ -155,6 +155,7 @@ exec "${GUILE:-guile}" "$0" "$@"
     (format #t "\navailable GC implementations:\n")
     (format #t "  semi                   serial copying\n")
     (format #t "  pcc                    parallel copying\n")
+    (format #t "  generational-pcc       generational parallel copying\n")
     (format #t "  bdw                    third-party BDW-GC parallel mark-sweep\n")
     (format #t "  mmc                    serial immix\n")
     (format #t "  generational-mmc       mmc + in-place generations\n")
