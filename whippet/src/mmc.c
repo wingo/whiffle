@@ -104,6 +104,16 @@ mutator_heap(struct gc_mutator *mutator) {
   return mutator->heap;
 }
 
+struct gc_heap* gc_mutator_heap(struct gc_mutator *mutator) {
+  return mutator_heap(mutator);
+}
+uintptr_t gc_small_object_nursery_low_address(struct gc_heap *heap) {
+  GC_CRASH();
+}
+uintptr_t gc_small_object_nursery_high_address(struct gc_heap *heap) {
+  GC_CRASH();
+}
+
 static void
 gc_trace_worker_call_with_data(void (*f)(struct gc_tracer *tracer,
                                          struct gc_heap *heap,
@@ -1127,7 +1137,8 @@ gc_init(const struct gc_options *options, struct gc_stack_addr *stack_base,
     return 0;
   }
   
-  if (!large_object_space_init(heap_large_object_space(*heap), *heap))
+  if (!large_object_space_init(heap_large_object_space(*heap), *heap,
+                               (*heap)->background_thread))
     GC_CRASH();
 
   *mut = calloc(1, sizeof(struct gc_mutator));

@@ -3,7 +3,6 @@
 
 #include <pthread.h>
 #include <stdlib.h>
-#include <sys/mman.h>
 
 #include "gc-api.h"
 
@@ -18,6 +17,7 @@
 #include "gc-attrs.h"
 #include "gc-inline.h"
 #include "gc-lock.h"
+#include "gc-platform.h"
 #include "spin.h"
 
 // A copy space: a block-structured space that traces via evacuation.
@@ -57,6 +57,7 @@ struct copy_space_block {
       struct copy_space_block *next;
       uint8_t in_core;
       uint8_t all_zeroes[2];
+      uint8_t is_survivor[2];
       size_t allocated; // For partly-empty blocks.
     };
     uint8_t padding[COPY_SPACE_HEADER_BYTES_PER_BLOCK];
@@ -81,13 +82,17 @@ struct copy_space_slab {
 STATIC_ASSERT_EQ(sizeof(struct copy_space_slab), COPY_SPACE_SLAB_SIZE);
 
 static inline struct copy_space_block*
-copy_space_block_header(struct copy_space_block_payload *payload) {
-  uintptr_t addr = (uintptr_t) payload;
+copy_space_block_for_addr(uintptr_t addr) {
   uintptr_t base = align_down(addr, COPY_SPACE_SLAB_SIZE);
   struct copy_space_slab *slab = (struct copy_space_slab*) base;
   uintptr_t block_idx =
     (addr / COPY_SPACE_BLOCK_SIZE) % COPY_SPACE_BLOCKS_PER_SLAB;
   return &slab->headers[block_idx - COPY_SPACE_HEADER_BLOCKS_PER_SLAB];
+}
+
+static inline struct copy_space_block*
+copy_space_block_header(struct copy_space_block_payload *payload) {
+  return copy_space_block_for_addr((uintptr_t) payload);
 }
 
 static inline struct copy_space_block_payload*
@@ -115,6 +120,12 @@ struct copy_space_block_stack {
   struct copy_space_block_list list;
 };
 
+enum copy_space_flags {
+  COPY_SPACE_ATOMIC_FORWARDING = 1,
+  COPY_SPACE_ALIGNED = 2,
+  COPY_SPACE_HAS_FIELD_LOGGING_BITS = 4,
+};
+
 struct copy_space {
   pthread_mutex_t lock;
   struct copy_space_block_stack empty;
@@ -129,11 +140,24 @@ struct copy_space {
   // lock.
   uint8_t active_region ALIGNED_TO_AVOID_FALSE_SHARING;
   uint8_t atomic_forward;
+  uint8_t in_gc;
+  uint32_t flags;
   size_t allocated_bytes_at_last_gc;
   size_t fragmentation_at_last_gc;
   struct extents *extents;
   struct copy_space_slab **slabs;
   size_t nslabs;
+};
+
+enum copy_space_forward_result {
+  // We went to forward an edge, but the target was already forwarded, so we
+  // just updated the edge.
+  COPY_SPACE_FORWARD_UPDATED,
+  // We went to forward an edge and evacuated the referent to a new location.
+  COPY_SPACE_FORWARD_EVACUATED,
+  // We went to forward an edge but failed to acquire memory for its new
+  // location.
+  COPY_SPACE_FORWARD_FAILED,
 };
 
 struct copy_space_allocator {
@@ -195,8 +219,10 @@ copy_space_pop_empty_block(struct copy_space *space,
                            const struct gc_lock *lock) {
   struct copy_space_block *ret = copy_space_block_stack_pop(&space->empty,
                                                             lock);
-  if (ret)
+  if (ret) {
     ret->allocated = 0;
+    ret->is_survivor[space->active_region] = 0;
+  }
   return ret;
 }
 
@@ -215,6 +241,8 @@ copy_space_pop_full_block(struct copy_space *space) {
 static void
 copy_space_push_full_block(struct copy_space *space,
                            struct copy_space_block *block) {
+  if (space->in_gc)
+    block->is_survivor[space->active_region] = 1;
   copy_space_block_list_push(&space->full, block);
 }
 
@@ -297,6 +325,68 @@ copy_space_reacquire_memory(struct copy_space *space, size_t bytes) {
   GC_ASSERT(pending + COPY_SPACE_BLOCK_SIZE > 0);
 }
 
+static inline int
+copy_space_contains_address(struct copy_space *space, uintptr_t addr) {
+  return extents_contain_addr(space->extents, addr);
+}
+
+static inline int
+copy_space_contains(struct copy_space *space, struct gc_ref ref) {
+  return copy_space_contains_address(space, gc_ref_value(ref));
+}
+
+static int
+copy_space_has_field_logging_bits(struct copy_space *space) {
+  return space->flags & COPY_SPACE_HAS_FIELD_LOGGING_BITS;
+}
+
+static size_t
+copy_space_field_logging_blocks(struct copy_space *space) {
+  if (!copy_space_has_field_logging_bits(space))
+    return 0;
+  size_t bytes = COPY_SPACE_SLAB_SIZE / sizeof (uintptr_t) / 8;
+  size_t blocks =
+    align_up(bytes, COPY_SPACE_BLOCK_SIZE) / COPY_SPACE_BLOCK_SIZE;
+  return blocks;
+}
+
+static uint8_t*
+copy_space_field_logged_byte(struct gc_edge edge) {
+  uintptr_t addr = gc_edge_address(edge);
+  uintptr_t base = align_down(addr, COPY_SPACE_SLAB_SIZE);
+  base += offsetof(struct copy_space_slab, blocks);
+  uintptr_t field = (addr & (COPY_SPACE_SLAB_SIZE - 1)) / sizeof(uintptr_t);
+  uintptr_t byte = field / 8;
+  return (uint8_t*) (base + byte);
+}
+
+static uint8_t
+copy_space_field_logged_bit(struct gc_edge edge) {
+  // Each byte has 8 bytes, covering 8 fields.
+  size_t field = gc_edge_address(edge) / sizeof(uintptr_t);
+  return 1 << (field % 8);
+}
+
+static void
+copy_space_clear_field_logged_bits_for_region(struct copy_space *space,
+                                              void *region_base) {
+  uintptr_t addr = (uintptr_t)region_base;
+  GC_ASSERT_EQ(addr, align_down(addr, COPY_SPACE_REGION_SIZE));
+  GC_ASSERT(copy_space_contains_address(space, addr));
+  if (copy_space_has_field_logging_bits(space))
+    memset(copy_space_field_logged_byte(gc_edge(region_base)),
+           0,
+           COPY_SPACE_REGION_SIZE / sizeof(uintptr_t) / 8);
+}
+
+static void
+copy_space_clear_field_logged_bits_for_block(struct copy_space *space,
+                                             struct copy_space_block *block) {
+  struct copy_space_block_payload *payload = copy_space_block_payload(block);
+  copy_space_clear_field_logged_bits_for_region(space, &payload->regions[0]);
+  copy_space_clear_field_logged_bits_for_region(space, &payload->regions[1]);
+}
+
 static inline void
 copy_space_allocator_set_block(struct copy_space_allocator *alloc,
                                struct copy_space_block *block,
@@ -327,10 +417,12 @@ copy_space_allocator_acquire_empty_block(struct copy_space_allocator *alloc,
   gc_lock_release(&lock);
   if (copy_space_allocator_acquire_block(alloc, block, space->active_region)) {
     block->in_core = 1;
-    if (block->all_zeroes[space->active_region])
+    if (block->all_zeroes[space->active_region]) {
       block->all_zeroes[space->active_region] = 0;
-    else
+    } else {
       memset((char*)alloc->hp, 0, COPY_SPACE_REGION_SIZE);
+      copy_space_clear_field_logged_bits_for_region(space, (void*)alloc->hp);
+    }
     return 1;
   }
   return 0;
@@ -392,9 +484,7 @@ copy_space_allocator_release_partly_full_block(struct copy_space_allocator *allo
 static inline struct gc_ref
 copy_space_allocate(struct copy_space_allocator *alloc,
                     struct copy_space *space,
-                    size_t size,
-                    void (*get_more_empty_blocks)(void *data),
-                    void *data) {
+                    size_t size) {
   GC_ASSERT(size > 0);
   GC_ASSERT(size <= gc_allocator_large_threshold());
   size = align_up(size, gc_allocator_small_granule_size());
@@ -409,8 +499,8 @@ copy_space_allocate(struct copy_space_allocator *alloc,
       goto done;
     copy_space_allocator_release_full_block(alloc, space);
   }
-  while (!copy_space_allocator_acquire_empty_block(alloc, space))
-    get_more_empty_blocks(data);
+  if (!copy_space_allocator_acquire_empty_block(alloc, space))
+    return gc_ref_null();
   // The newly acquired block is empty and is therefore large enough for
   // a small allocation.
 
@@ -445,13 +535,48 @@ copy_space_flip(struct copy_space *space) {
   space->allocated_bytes = 0;
   space->fragmentation = 0;
   space->active_region ^= 1;
+  space->in_gc = 1;
+}
+
+static inline void
+copy_space_allocator_init(struct copy_space_allocator *alloc) {
+  memset(alloc, 0, sizeof(*alloc));
+}
+
+static inline void
+copy_space_allocator_finish(struct copy_space_allocator *alloc,
+                            struct copy_space *space) {
+  if (alloc->block)
+    copy_space_allocator_release_partly_full_block(alloc, space);
 }
 
 static void
-copy_space_finish_gc(struct copy_space *space) {
+copy_space_finish_gc(struct copy_space *space, int is_minor_gc) {
   // Mutators stopped, can access nonatomically.
+  if (is_minor_gc) {
+    // Avoid mixing survivors and new objects on the same blocks.
+    struct copy_space_allocator alloc;
+    copy_space_allocator_init(&alloc);
+    while (copy_space_allocator_acquire_partly_full_block(&alloc, space))
+      copy_space_allocator_release_full_block(&alloc, space);
+    copy_space_allocator_finish(&alloc, space);
+  }
+
   space->allocated_bytes_at_last_gc = space->allocated_bytes;
   space->fragmentation_at_last_gc = space->fragmentation;
+  space->in_gc = 0;
+}
+
+static int
+copy_space_can_allocate(struct copy_space *space, size_t bytes) {
+  // With lock!
+  for (struct copy_space_block *empties = space->empty.list.head;
+       empties;
+       empties = empties->next) {
+    if (bytes <= COPY_SPACE_REGION_SIZE) return 1;
+    bytes -= COPY_SPACE_REGION_SIZE;
+  }
+  return 0;
 }
 
 static void
@@ -472,52 +597,52 @@ copy_space_gc_during_evacuation(void *data) {
   GC_CRASH();
 }
 
-static inline int
+static inline enum copy_space_forward_result
 copy_space_forward_atomic(struct copy_space *space, struct gc_edge edge,
                           struct gc_ref old_ref,
                           struct copy_space_allocator *alloc) {
-  GC_ASSERT(copy_space_object_region(old_ref) != space->active_region);
   struct gc_atomic_forward fwd = gc_atomic_forward_begin(old_ref);
 
+retry:
   if (fwd.state == GC_FORWARDING_STATE_NOT_FORWARDED)
     gc_atomic_forward_acquire(&fwd);
 
   switch (fwd.state) {
   case GC_FORWARDING_STATE_NOT_FORWARDED:
-  case GC_FORWARDING_STATE_ABORTED:
   default:
     // Impossible.
     GC_CRASH();
   case GC_FORWARDING_STATE_ACQUIRED: {
     // We claimed the object successfully; evacuating is up to us.
     size_t bytes = gc_atomic_forward_object_size(&fwd);
-    struct gc_ref new_ref =
-      copy_space_allocate(alloc, space, bytes,
-                          copy_space_gc_during_evacuation, NULL);
+    struct gc_ref new_ref = copy_space_allocate(alloc, space, bytes);
+    if (gc_ref_is_null(new_ref)) {
+      gc_atomic_forward_abort(&fwd);
+      return COPY_SPACE_FORWARD_FAILED;
+    }
     // Copy object contents before committing, as we don't know what
     // part of the object (if any) will be overwritten by the
     // commit.
     memcpy(gc_ref_heap_object(new_ref), gc_ref_heap_object(old_ref), bytes);
     gc_atomic_forward_commit(&fwd, new_ref);
     gc_edge_update(edge, new_ref);
-    return 1;
+    return COPY_SPACE_FORWARD_EVACUATED;
   }
   case GC_FORWARDING_STATE_BUSY:
     // Someone else claimed this object first.  Spin until new address
     // known, or evacuation aborts.
     for (size_t spin_count = 0;; spin_count++) {
       if (gc_atomic_forward_retry_busy(&fwd))
-        break;
+        goto retry;
       yield_for_spin(spin_count);
     }
-    GC_ASSERT(fwd.state == GC_FORWARDING_STATE_FORWARDED);
-    // Fall through.
+    GC_CRASH(); // Unreachable.
   case GC_FORWARDING_STATE_FORWARDED:
     // The object has been evacuated already.  Update the edge;
     // whoever forwarded the object will make sure it's eventually
     // traced.
     gc_edge_update(edge, gc_ref(gc_atomic_forward_address(&fwd)));
-    return 0;
+    return COPY_SPACE_FORWARD_UPDATED;
   }
 }
 
@@ -525,8 +650,8 @@ static int
 copy_space_forward_if_traced_atomic(struct copy_space *space,
                                     struct gc_edge edge,
                                     struct gc_ref old_ref) {
-  GC_ASSERT(copy_space_object_region(old_ref) != space->active_region);
   struct gc_atomic_forward fwd = gc_atomic_forward_begin(old_ref);
+retry:
   switch (fwd.state) {
   case GC_FORWARDING_STATE_NOT_FORWARDED:
     return 0;
@@ -535,11 +660,10 @@ copy_space_forward_if_traced_atomic(struct copy_space *space,
     // known.
     for (size_t spin_count = 0;; spin_count++) {
       if (gc_atomic_forward_retry_busy(&fwd))
-        break;
+        goto retry;
       yield_for_spin(spin_count);
     }
-    GC_ASSERT(fwd.state == GC_FORWARDING_STATE_FORWARDED);
-    // Fall through.
+    GC_CRASH(); // Unreachable.
   case GC_FORWARDING_STATE_FORWARDED:
     gc_edge_update(edge, gc_ref(gc_atomic_forward_address(&fwd)));
     return 1;
@@ -548,26 +672,24 @@ copy_space_forward_if_traced_atomic(struct copy_space *space,
   }
 }
 
-static inline int
+static inline enum copy_space_forward_result
 copy_space_forward_nonatomic(struct copy_space *space, struct gc_edge edge,
                              struct gc_ref old_ref,
                              struct copy_space_allocator *alloc) {
-  GC_ASSERT(copy_space_object_region(old_ref) != space->active_region);
-
   uintptr_t forwarded = gc_object_forwarded_nonatomic(old_ref);
   if (forwarded) {
     gc_edge_update(edge, gc_ref(forwarded));
-    return 0;
+    return COPY_SPACE_FORWARD_UPDATED;
   } else {
     size_t size;
     gc_trace_object(old_ref, NULL, NULL, NULL, &size);
-    struct gc_ref new_ref =
-      copy_space_allocate(alloc, space, size,
-                          copy_space_gc_during_evacuation, NULL);
+    struct gc_ref new_ref = copy_space_allocate(alloc, space, size);
+    if (gc_ref_is_null(new_ref))
+      return COPY_SPACE_FORWARD_FAILED;
     memcpy(gc_ref_heap_object(new_ref), gc_ref_heap_object(old_ref), size);
     gc_object_forward_nonatomic(old_ref, new_ref);
     gc_edge_update(edge, new_ref);
-    return 1;
+    return COPY_SPACE_FORWARD_EVACUATED;
   }
 }
 
@@ -575,7 +697,6 @@ static int
 copy_space_forward_if_traced_nonatomic(struct copy_space *space,
                                        struct gc_edge edge,
                                        struct gc_ref old_ref) {
-  GC_ASSERT(copy_space_object_region(old_ref) != space->active_region);
   uintptr_t forwarded = gc_object_forwarded_nonatomic(old_ref);
   if (forwarded) {
     gc_edge_update(edge, gc_ref(forwarded));
@@ -584,63 +705,131 @@ copy_space_forward_if_traced_nonatomic(struct copy_space *space,
   return 0;
 }
 
-static inline int
-copy_space_forward(struct copy_space *space, struct gc_edge edge,
+static inline enum copy_space_forward_result
+copy_space_forward(struct copy_space *src_space, struct copy_space *dst_space,
+                   struct gc_edge edge,
                    struct gc_ref old_ref,
-                   struct copy_space_allocator *alloc) {
-  if (GC_PARALLEL && space->atomic_forward)
-    return copy_space_forward_atomic(space, edge, old_ref, alloc);
-  return copy_space_forward_nonatomic(space, edge, old_ref, alloc);
+                   struct copy_space_allocator *dst_alloc) {
+  GC_ASSERT(copy_space_contains(src_space, old_ref));
+  GC_ASSERT(src_space != dst_space
+            || copy_space_object_region(old_ref) != src_space->active_region);
+  if (GC_PARALLEL && src_space->atomic_forward)
+    return copy_space_forward_atomic(dst_space, edge, old_ref, dst_alloc);
+  return copy_space_forward_nonatomic(dst_space, edge, old_ref, dst_alloc);
 }
 
 static inline int
 copy_space_forward_if_traced(struct copy_space *space, struct gc_edge edge,
                              struct gc_ref old_ref) {
+  GC_ASSERT(copy_space_contains(space, old_ref));
+  GC_ASSERT(copy_space_object_region(old_ref) != space->active_region);
   if (GC_PARALLEL && space->atomic_forward)
     return copy_space_forward_if_traced_atomic(space, edge, old_ref);
   return copy_space_forward_if_traced_nonatomic(space, edge, old_ref);
 }
 
+static int
+copy_space_is_aligned(struct copy_space *space) {
+  return space->flags & COPY_SPACE_ALIGNED;
+}
+
+static int
+copy_space_fixed_size(struct copy_space *space) {
+  // If the extent is aligned, it is fixed.
+  return copy_space_is_aligned(space);
+}
+
+static inline uintptr_t
+copy_space_low_aligned_address(struct copy_space *space) {
+  GC_ASSERT(copy_space_is_aligned(space));
+  GC_ASSERT_EQ(space->extents->size, 1);
+  return space->extents->ranges[0].lo_addr;
+}
+
+static inline uintptr_t
+copy_space_high_aligned_address(struct copy_space *space) {
+  GC_ASSERT(copy_space_is_aligned(space));
+  GC_ASSERT_EQ(space->extents->size, 1);
+  return space->extents->ranges[0].hi_addr;
+}
+
 static inline int
-copy_space_contains(struct copy_space *space, struct gc_ref ref) {
-  return extents_contain_addr(space->extents, gc_ref_value(ref));
+copy_space_contains_address_aligned(struct copy_space *space, uintptr_t addr) {
+  uintptr_t low_addr = copy_space_low_aligned_address(space);
+  uintptr_t high_addr = copy_space_high_aligned_address(space);
+  uintptr_t size = high_addr - low_addr;
+  return (addr - low_addr) < size;
 }
 
-static inline void
-copy_space_allocator_init(struct copy_space_allocator *alloc) {
-  memset(alloc, 0, sizeof(*alloc));
+static inline int
+copy_space_contains_edge_aligned(struct copy_space *space,
+                                 struct gc_edge edge) {
+  return copy_space_contains_address_aligned(space, gc_edge_address(edge));
 }
 
-static inline void
-copy_space_allocator_finish(struct copy_space_allocator *alloc,
-                            struct copy_space *space) {
-  if (alloc->block)
-    copy_space_allocator_release_partly_full_block(alloc, space);
+static inline int
+copy_space_should_promote(struct copy_space *space, struct gc_ref ref) {
+  GC_ASSERT(copy_space_contains(space, ref));
+  uintptr_t addr = gc_ref_value(ref);
+  struct copy_space_block *block = copy_space_block_for_addr(gc_ref_value(ref));
+  GC_ASSERT_EQ(copy_space_object_region(ref), space->active_region ^ 1);
+  return block->is_survivor[space->active_region ^ 1];
+}
+
+static int
+copy_space_contains_edge(struct copy_space *space, struct gc_edge edge) {
+  return copy_space_contains_address(space, gc_edge_address(edge));
+}
+
+static int
+copy_space_remember_edge(struct copy_space *space, struct gc_edge edge) {
+  GC_ASSERT(copy_space_contains_edge(space, edge));
+  uint8_t* loc = copy_space_field_logged_byte(edge);
+  uint8_t bit = copy_space_field_logged_bit(edge);
+  uint8_t byte = atomic_load_explicit(loc, memory_order_acquire);
+  do {
+    if (byte & bit) return 0;
+  } while (!atomic_compare_exchange_weak_explicit(loc, &byte, byte|bit,
+                                                  memory_order_acq_rel,
+                                                  memory_order_acquire));
+  return 1;
+}
+
+static int
+copy_space_forget_edge(struct copy_space *space, struct gc_edge edge) {
+  GC_ASSERT(copy_space_contains_edge(space, edge));
+  uint8_t* loc = copy_space_field_logged_byte(edge);
+  uint8_t bit = copy_space_field_logged_bit(edge);
+  uint8_t byte = atomic_load_explicit(loc, memory_order_acquire);
+  do {
+    if (!(byte & bit)) return 0;
+  } while (!atomic_compare_exchange_weak_explicit(loc, &byte, byte&~bit,
+                                                  memory_order_acq_rel,
+                                                  memory_order_acquire));
+  return 1;
+}
+
+static size_t copy_space_is_power_of_two(size_t n) {
+  GC_ASSERT(n != 0);
+  return (n & (n - 1)) == 0;
+}
+
+static size_t copy_space_round_up_power_of_two(size_t n) {
+  if (copy_space_is_power_of_two(n))
+    return n;
+
+  return 1ULL << (sizeof(size_t) * 8 - __builtin_clzll(n));
 }
 
 static struct copy_space_slab*
-copy_space_allocate_slabs(size_t nslabs) {
+copy_space_allocate_slabs(size_t nslabs, uint32_t flags) {
   size_t size = nslabs * COPY_SPACE_SLAB_SIZE;
-  size_t extent = size + COPY_SPACE_SLAB_SIZE;
-
-  char *mem = mmap(NULL, extent, PROT_READ|PROT_WRITE,
-                   MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-  if (mem == MAP_FAILED) {
-    perror("mmap failed");
-    return NULL;
+  size_t alignment = COPY_SPACE_SLAB_SIZE;
+  if (flags & COPY_SPACE_ALIGNED) {
+    GC_ASSERT(copy_space_is_power_of_two(size));
+    alignment = size;
   }
-
-  uintptr_t base = (uintptr_t) mem;
-  uintptr_t end = base + extent;
-  uintptr_t aligned_base = align_up(base, COPY_SPACE_SLAB_SIZE);
-  uintptr_t aligned_end = aligned_base + size;
-
-  if (aligned_base - base)
-    munmap((void*)base, aligned_base - base);
-  if (end - aligned_end)
-    munmap((void*)aligned_end, end - aligned_end);
-
-  return (struct copy_space_slab*) aligned_base;
+  return gc_platform_acquire_memory(size, alignment);
 }
 
 static void
@@ -666,18 +855,27 @@ copy_space_shrink(struct copy_space *space, size_t bytes) {
   // can help us then!
 }
       
+static size_t
+copy_space_first_payload_block(struct copy_space *space) {
+  return copy_space_field_logging_blocks(space);
+}
+
 static void
 copy_space_expand(struct copy_space *space, size_t bytes) {
+  GC_ASSERT(!copy_space_fixed_size(space));
   ssize_t to_acquire = -copy_space_maybe_reacquire_memory(space, bytes);
   if (to_acquire <= 0) return;
   size_t reserved = align_up(to_acquire, COPY_SPACE_SLAB_SIZE);
   size_t nslabs = reserved / COPY_SPACE_SLAB_SIZE;
-  struct copy_space_slab *slabs = copy_space_allocate_slabs(nslabs);
+  struct copy_space_slab *slabs =
+    copy_space_allocate_slabs(nslabs, space->flags);
   copy_space_add_slabs(space, slabs, nslabs);
 
   struct gc_lock lock = copy_space_lock(space);
   for (size_t slab = 0; slab < nslabs; slab++) {
-    for (size_t idx = 0; idx < COPY_SPACE_NONHEADER_BLOCKS_PER_SLAB; idx++) {
+    for (size_t idx = copy_space_first_payload_block(space);
+         idx < COPY_SPACE_NONHEADER_BLOCKS_PER_SLAB;
+         idx++) {
       struct copy_space_block *block = &slabs[slab].headers[idx];
       block->all_zeroes[0] = block->all_zeroes[1] = 1;
       block->in_core = 0;
@@ -715,20 +913,23 @@ copy_space_page_out_blocks(void *data) {
     if (!block) break;
     block->in_core = 0;
     block->all_zeroes[0] = block->all_zeroes[1] = 1;
-    madvise(copy_space_block_payload(block), COPY_SPACE_BLOCK_SIZE,
-            MADV_DONTNEED);
+    gc_platform_discard_memory(copy_space_block_payload(block),
+                               COPY_SPACE_BLOCK_SIZE);
+    copy_space_clear_field_logged_bits_for_block(space, block);
     copy_space_block_stack_push(&space->paged_out[age + 1], block, &lock);
   }
   gc_lock_release(&lock);
 }
 
 static int
-copy_space_init(struct copy_space *space, size_t size, int atomic,
+copy_space_init(struct copy_space *space, size_t size, uint32_t flags,
                 struct gc_background_thread *thread) {
   size = align_up(size, COPY_SPACE_BLOCK_SIZE);
   size_t reserved = align_up(size, COPY_SPACE_SLAB_SIZE);
+  if (flags & COPY_SPACE_ALIGNED)
+    reserved = copy_space_round_up_power_of_two(reserved);
   size_t nslabs = reserved / COPY_SPACE_SLAB_SIZE;
-  struct copy_space_slab *slabs = copy_space_allocate_slabs(nslabs);
+  struct copy_space_slab *slabs = copy_space_allocate_slabs(nslabs, flags);
   if (!slabs)
     return 0;
 
@@ -742,17 +943,21 @@ copy_space_init(struct copy_space *space, size_t size, int atomic,
   space->fragmentation = 0;
   space->bytes_to_page_out = 0;
   space->active_region = 0;
-  space->atomic_forward = atomic;
+  space->atomic_forward = flags & COPY_SPACE_ATOMIC_FORWARDING;
+  space->flags = flags;
   space->allocated_bytes_at_last_gc = 0;
   space->fragmentation_at_last_gc = 0;
-  space->extents = extents_allocate(10);
+  space->extents = extents_allocate((flags & COPY_SPACE_ALIGNED) ? 1 : 10);
   copy_space_add_slabs(space, slabs, nslabs);
   struct gc_lock lock = copy_space_lock(space);
   for (size_t slab = 0; slab < nslabs; slab++) {
-    for (size_t idx = 0; idx < COPY_SPACE_NONHEADER_BLOCKS_PER_SLAB; idx++) {
+    for (size_t idx = copy_space_first_payload_block(space);
+         idx < COPY_SPACE_NONHEADER_BLOCKS_PER_SLAB;
+         idx++) {
       struct copy_space_block *block = &slabs[slab].headers[idx];
       block->all_zeroes[0] = block->all_zeroes[1] = 1;
       block->in_core = 0;
+      block->is_survivor[0] = block->is_survivor[1] = 0;
       if (reserved > size) {
         copy_space_page_out_block(space, block, &lock);
         reserved -= COPY_SPACE_BLOCK_SIZE;

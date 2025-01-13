@@ -5,12 +5,14 @@
 #include <pthread.h>
 #include <sched.h>
 #include <stdio.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
 
 #define GC_IMPL 1
 
 #include "debug.h"
+#include "gc-align.h"
 #include "gc-assert.h"
 #include "gc-inline.h"
 #include "gc-platform.h"
@@ -120,4 +122,90 @@ uint64_t gc_platform_monotonic_nanoseconds(void) {
   uint64_t ns = ts.tv_nsec;
   uint64_t ns_per_sec = 1000000000;
   return s * ns_per_sec + ns;
+}
+
+size_t gc_platform_page_size(void) {
+  return getpagesize();
+}
+
+struct gc_reservation gc_platform_reserve_memory(size_t size,
+                                                 size_t alignment) {
+  GC_ASSERT_EQ(size, align_down(size, getpagesize()));
+  GC_ASSERT_EQ(alignment & (alignment - 1), 0);
+  GC_ASSERT_EQ(alignment, align_down(alignment, getpagesize()));
+
+  size_t extent = size + alignment;
+  void *mem = mmap(NULL, extent, PROT_NONE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+
+  if (mem == MAP_FAILED) {
+    perror("failed to reserve address space");
+    GC_CRASH();
+  }
+
+  uintptr_t base = (uintptr_t) mem;
+  uintptr_t end = base + extent;
+  uintptr_t aligned_base = alignment ? align_up(base, alignment) : base;
+  uintptr_t aligned_end = aligned_base + size;
+
+  if (aligned_base - base)
+    munmap((void*)base, aligned_base - base);
+  if (end - aligned_end)
+    munmap((void*)aligned_end, end - aligned_end);
+
+  return (struct gc_reservation){aligned_base, size};
+}
+
+void*
+gc_platform_acquire_memory_from_reservation(struct gc_reservation reservation,
+                                            size_t offset, size_t size) {
+  GC_ASSERT_EQ(size, align_down(size, getpagesize()));
+  GC_ASSERT(size <= reservation.size);
+  GC_ASSERT(offset <= reservation.size - size);
+
+  void *mem = mmap((void*)(reservation.base + offset), size,
+                   PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+  if (mem == MAP_FAILED) {
+    perror("mmap failed");
+    return NULL;
+  }
+
+  return mem;
+}
+
+void
+gc_platform_release_reservation(struct gc_reservation reservation) {
+  if (munmap((void*)reservation.base, reservation.size) != 0)
+    perror("failed to unmap memory");
+}
+
+void*
+gc_platform_acquire_memory(size_t size, size_t alignment) {
+  struct gc_reservation reservation =
+    gc_platform_reserve_memory(size, alignment);
+  return gc_platform_acquire_memory_from_reservation(reservation, 0, size);
+}
+
+void gc_platform_release_memory(void *ptr, size_t size) {
+  GC_ASSERT_EQ((uintptr_t)ptr, align_down((uintptr_t)ptr, getpagesize()));
+  GC_ASSERT_EQ(size, align_down(size, getpagesize()));
+  if (munmap(ptr, size) != 0)
+    perror("failed to unmap memory");
+}
+
+int gc_platform_populate_memory(void *ptr, size_t size) {
+  GC_ASSERT_EQ((uintptr_t)ptr, align_down((uintptr_t)ptr, getpagesize()));
+  GC_ASSERT_EQ(size, align_down(size, getpagesize()));
+  if (madvise(ptr, size, MADV_WILLNEED) == 0)
+    return 1;
+  perror("failed to populate memory");
+  return 0;
+}
+
+int gc_platform_discard_memory(void *ptr, size_t size) {
+  GC_ASSERT_EQ((uintptr_t)ptr, align_down((uintptr_t)ptr, getpagesize()));
+  GC_ASSERT_EQ(size, align_down(size, getpagesize()));
+  if (madvise(ptr, size, MADV_DONTNEED) == 0)
+    return 1;
+  perror("failed to discard memory");
+  return 0;
 }

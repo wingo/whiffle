@@ -30,6 +30,11 @@ GC_API_ int gc_init(const struct gc_options *options,
                     struct gc_event_listener event_listener,
                     void *event_listener_data);
 
+GC_API_ struct gc_heap* gc_mutator_heap(struct gc_mutator *mut);
+
+GC_API_ uintptr_t gc_small_object_nursery_low_address(struct gc_heap *heap);
+GC_API_ uintptr_t gc_small_object_nursery_high_address(struct gc_heap *heap);
+
 struct gc_mutator_roots;
 GC_API_ void gc_mutator_set_roots(struct gc_mutator *mut,
                                   struct gc_mutator_roots *roots);
@@ -200,6 +205,17 @@ static inline int gc_object_is_old_generation(struct gc_mutator *mut,
     uint8_t byte = atomic_load_explicit(byte_loc, memory_order_relaxed);
     return byte & gc_old_generation_check_alloc_table_bit_pattern();
   }
+  case GC_OLD_GENERATION_CHECK_SMALL_OBJECT_NURSERY: {
+    struct gc_heap *heap = gc_mutator_heap(mut);
+    // Note that these addresses are fixed and that the embedder might
+    // want to store them somewhere or inline them into the output of
+    // JIT-generated code.  They may also be power-of-two aligned.
+    uintptr_t low_addr = gc_small_object_nursery_low_address(heap);
+    uintptr_t high_addr = gc_small_object_nursery_high_address(heap);
+    uintptr_t size = high_addr - low_addr;
+    uintptr_t addr = gc_ref_value(obj);
+    return addr - low_addr >= size;
+  }
   case GC_OLD_GENERATION_CHECK_SLOW:
     return gc_object_is_old_generation_slow(mut, obj);
   default:
@@ -236,13 +252,14 @@ static inline int gc_write_barrier_fast(struct gc_mutator *mut, struct gc_ref ob
     size_t field_table_alignment = gc_write_barrier_field_table_alignment();
     size_t fields_per_byte = gc_write_barrier_field_fields_per_byte();
     uint8_t first_bit_pattern = gc_write_barrier_field_first_bit_pattern();
+    ssize_t table_offset = gc_write_barrier_field_table_offset();
 
     uintptr_t addr = gc_edge_address(edge);
     uintptr_t base = addr & ~(field_table_alignment - 1);
     uintptr_t field = (addr & (field_table_alignment - 1)) / sizeof(uintptr_t);
     uintptr_t log_byte = field / fields_per_byte;
     uint8_t log_bit = first_bit_pattern << (field % fields_per_byte);
-    uint8_t *byte_loc = (uint8_t*)(base + log_byte);
+    uint8_t *byte_loc = (uint8_t*)(base + table_offset + log_byte);
     uint8_t byte = atomic_load_explicit(byte_loc, memory_order_relaxed);
     return !(byte & log_bit);
   }

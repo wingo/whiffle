@@ -30,12 +30,13 @@ static inline int gc_allocator_needs_clear(void) GC_ALWAYS_INLINE;
 enum gc_old_generation_check_kind {
   GC_OLD_GENERATION_CHECK_NONE,
   GC_OLD_GENERATION_CHECK_ALLOC_TABLE,
+  GC_OLD_GENERATION_CHECK_SMALL_OBJECT_NURSERY,
   GC_OLD_GENERATION_CHECK_SLOW
 };
 
 static inline enum gc_old_generation_check_kind gc_old_generation_check_kind(size_t obj_size) GC_ALWAYS_INLINE;
 
-static uint8_t gc_old_generation_check_alloc_table_bit_pattern(void) GC_ALWAYS_INLINE;
+static inline uint8_t gc_old_generation_check_alloc_table_bit_pattern(void) GC_ALWAYS_INLINE;
 
 enum gc_write_barrier_kind {
   GC_WRITE_BARRIER_NONE,
@@ -48,6 +49,7 @@ static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t obj_size) 
 static inline size_t gc_write_barrier_card_table_alignment(void) GC_ALWAYS_INLINE;
 static inline size_t gc_write_barrier_card_size(void) GC_ALWAYS_INLINE;
 static inline size_t gc_write_barrier_field_table_alignment(void) GC_ALWAYS_INLINE;
+static inline ptrdiff_t gc_write_barrier_field_table_offset(void) GC_ALWAYS_INLINE;
 static inline size_t gc_write_barrier_field_fields_per_byte(void) GC_ALWAYS_INLINE;
 static inline uint8_t gc_write_barrier_field_first_bit_pattern(void) GC_ALWAYS_INLINE;
 

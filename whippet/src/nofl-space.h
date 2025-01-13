@@ -5,7 +5,6 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
-#include <sys/mman.h>
 
 #include "gc-api.h"
 
@@ -19,6 +18,7 @@
 #include "gc-attrs.h"
 #include "gc-inline.h"
 #include "gc-lock.h"
+#include "gc-platform.h"
 #include "spin.h"
 #include "swar.h"
 
@@ -1201,6 +1201,10 @@ static void
 nofl_space_promote_blocks(struct nofl_space *space) {
   struct nofl_block_ref block;
   while (!nofl_block_is_null(block = nofl_block_list_pop(&space->promoted))) {
+    block.summary->hole_count = 0;
+    block.summary->hole_granules = 0;
+    block.summary->holes_with_fragmentation = 0;
+    block.summary->fragmentation_granules = 0;
     struct nofl_allocator alloc = { block.addr, block.addr, block };
     nofl_allocator_finish_sweeping_in_block(&alloc, space->sweep_mask);
     atomic_fetch_add(&space->old_generation_granules,
@@ -1407,7 +1411,8 @@ nofl_space_should_evacuate(struct nofl_space *space, uint8_t metadata_byte,
 }
 
 static inline int
-nofl_space_set_mark(struct nofl_space *space, uint8_t *metadata, uint8_t byte) {
+nofl_space_set_mark_relaxed(struct nofl_space *space, uint8_t *metadata,
+                            uint8_t byte) {
   uint8_t mask = NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_MARK_0
     | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2;
   atomic_store_explicit(metadata,
@@ -1417,9 +1422,20 @@ nofl_space_set_mark(struct nofl_space *space, uint8_t *metadata, uint8_t byte) {
 }
 
 static inline int
+nofl_space_set_mark(struct nofl_space *space, uint8_t *metadata, uint8_t byte) {
+  uint8_t mask = NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_MARK_0
+    | NOFL_METADATA_BYTE_MARK_1 | NOFL_METADATA_BYTE_MARK_2;
+  atomic_store_explicit(metadata,
+                        (byte & ~mask) | space->marked_mask,
+                        memory_order_release);
+  return 1;
+}
+
+static inline int
 nofl_space_set_nonempty_mark(struct nofl_space *space, uint8_t *metadata,
                              uint8_t byte, struct gc_ref ref) {
-  nofl_space_set_mark(space, metadata, byte);
+  // FIXME: Check that relaxed atomics are actually worth it.
+  nofl_space_set_mark_relaxed(space, metadata, byte);
   nofl_block_set_mark(gc_ref_value(ref));
   return 1;
 }
@@ -1481,18 +1497,28 @@ nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
 
   switch (fwd.state) {
   case GC_FORWARDING_STATE_NOT_FORWARDED:
-  case GC_FORWARDING_STATE_ABORTED:
   default:
     // Impossible.
     GC_CRASH();
   case GC_FORWARDING_STATE_ACQUIRED: {
-    // We claimed the object successfully; evacuating is up to us.
+    // We claimed the object successfully.
+
+    // First check again if someone else tried to evacuate this object and ended
+    // up marking in place instead.
+    byte = atomic_load_explicit(metadata, memory_order_acquire);
+    if (byte & space->marked_mask) {
+      // Indeed, already marked in place.
+      gc_atomic_forward_abort(&fwd);
+      return 0;
+    }
+
+    // Otherwise, we try to evacuate.
     size_t object_granules = nofl_space_live_object_granules(metadata);
     struct gc_ref new_ref = nofl_evacuation_allocate(evacuate, space,
                                                      object_granules);
     if (!gc_ref_is_null(new_ref)) {
-      // Copy object contents before committing, as we don't know what
-      // part of the object (if any) will be overwritten by the
+      // Whee, it works!  Copy object contents before committing, as we don't
+      // know what part of the object (if any) will be overwritten by the
       // commit.
       memcpy(gc_ref_heap_object(new_ref), gc_ref_heap_object(old_ref),
              object_granules * NOFL_GRANULE_SIZE);
@@ -1508,11 +1534,12 @@ nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
       return nofl_space_set_nonempty_mark(space, new_metadata, byte,
                                           new_ref);
     } else {
-      // Well shucks; allocation failed, marking the end of
-      // opportunistic evacuation.  No future evacuation of this
-      // object will succeed.  Mark in place instead.
+      // Well shucks; allocation failed.  Mark in place and then release the
+      // object.
+      nofl_space_set_mark(space, metadata, byte);
+      nofl_block_set_mark(gc_ref_value(old_ref));
       gc_atomic_forward_abort(&fwd);
-      return nofl_space_set_nonempty_mark(space, metadata, byte, old_ref);
+      return 1;
     }
     break;
   }
@@ -1524,7 +1551,7 @@ nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
         break;
       yield_for_spin(spin_count);
     }
-    if (fwd.state == GC_FORWARDING_STATE_ABORTED)
+    if (fwd.state == GC_FORWARDING_STATE_NOT_FORWARDED)
       // Remove evacuation aborted; remote will mark and enqueue.
       return 0;
     ASSERT(fwd.state == GC_FORWARDING_STATE_FORWARDED);
@@ -1571,7 +1598,7 @@ nofl_space_forward_if_evacuated(struct nofl_space *space,
         break;
       yield_for_spin(spin_count);
     }
-    if (fwd.state == GC_FORWARDING_STATE_ABORTED)
+    if (fwd.state == GC_FORWARDING_STATE_NOT_FORWARDED)
       // Remote evacuation aborted; remote will mark and enqueue.
       return 1;
     ASSERT(fwd.state == GC_FORWARDING_STATE_FORWARDED);
@@ -1671,27 +1698,7 @@ nofl_space_object_size(struct nofl_space *space, struct gc_ref ref) {
 
 static struct nofl_slab*
 nofl_allocate_slabs(size_t nslabs) {
-  size_t size = nslabs * NOFL_SLAB_SIZE;
-  size_t extent = size + NOFL_SLAB_SIZE;
-
-  char *mem = mmap(NULL, extent, PROT_READ|PROT_WRITE,
-                   MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-  if (mem == MAP_FAILED) {
-    perror("mmap failed");
-    return NULL;
-  }
-
-  uintptr_t base = (uintptr_t) mem;
-  uintptr_t end = base + extent;
-  uintptr_t aligned_base = align_up(base, NOFL_SLAB_SIZE);
-  uintptr_t aligned_end = aligned_base + size;
-
-  if (aligned_base - base)
-    munmap((void*)base, aligned_base - base);
-  if (end - aligned_end)
-    munmap((void*)aligned_end, end - aligned_end);
-
-  return (struct nofl_slab*) aligned_base;
+  return gc_platform_acquire_memory(nslabs * NOFL_SLAB_SIZE, NOFL_SLAB_SIZE);
 }
 
 static void
@@ -1809,7 +1816,7 @@ nofl_space_page_out_blocks(void *data) {
     if (nofl_block_is_null(block))
       break;
     nofl_block_set_flag(block, NOFL_BLOCK_ZERO | NOFL_BLOCK_PAGED_OUT);
-    madvise((void*)block.addr, NOFL_BLOCK_SIZE, MADV_DONTNEED);
+    gc_platform_discard_memory((void*)block.addr, NOFL_BLOCK_SIZE);
     nofl_block_stack_push(&space->paged_out[age + 1], block, &lock);
   }
   gc_lock_release(&lock);
