@@ -54,6 +54,9 @@ struct gc_heap {
   size_t processor_count;
   size_t max_active_mutator_count;
   int check_pending_ephemerons;
+#if GC_GENERATIONAL
+  struct gc_pending_ephemerons *nursery_pending_ephemerons;
+#endif
   struct gc_pending_ephemerons *pending_ephemerons;
   struct gc_finalizer_state *finalizer_state;
   size_t mutator_count;
@@ -544,6 +547,26 @@ tracer_visit(struct gc_edge edge, struct gc_heap *heap, void *trace_data) {
     gc_trace_worker_enqueue(worker, gc_edge_ref(edge));
 }
 
+static inline int
+trace_remembered_edge(struct gc_edge edge, struct gc_heap *heap,
+                      void *trace_data) {
+  GC_ASSERT(is_minor_collection(heap));
+  tracer_visit(edge, heap, trace_data);
+
+  // Return 1 if the edge should be kept in the remset, which is the
+  // case only for new objects that survive the minor GC, and only the
+  // nursery copy space has survivors.
+  if (new_space_contains(heap, gc_edge_ref(edge)))
+    return 1; // Keep edge in remset.
+  // Otherwise remove field-logging bit and return 0 to indicate that
+  // the remembered field set should remove this edge.
+  if (copy_space_contains_edge(heap_old_space(heap), edge))
+    copy_space_forget_edge(heap_old_space(heap), edge);
+  else
+    large_object_space_forget_edge(heap_large_object_space(heap), edge);
+  return 0;
+}
+
 static inline void trace_one(struct gc_ref ref, struct gc_heap *heap,
                              struct gc_trace_worker *worker) {
 #ifdef DEBUG
@@ -582,7 +605,7 @@ static inline void trace_root(struct gc_root root, struct gc_heap *heap,
     break;
   case GC_ROOT_KIND_EDGE_BUFFER:
     gc_field_set_visit_edge_buffer(heap_remembered_set(heap), root.edge_buffer,
-                                   tracer_visit, heap, worker);
+                                   trace_remembered_edge, heap, worker);
     break;
   default:
     GC_CRASH();
@@ -748,7 +771,7 @@ static void resolve_ephemerons_lazily(struct gc_heap *heap) {
 static void resolve_ephemerons_eagerly(struct gc_heap *heap) {
   atomic_store_explicit(&heap->check_pending_ephemerons, 1,
                         memory_order_release);
-  gc_scan_pending_ephemerons(heap->pending_ephemerons, heap, 0, 1);
+  gc_scan_pending_ephemerons(gc_heap_pending_ephemerons(heap), heap, 0, 1);
 }
 
 static void trace_resolved_ephemerons(struct gc_heap *heap) {
@@ -774,7 +797,7 @@ static void resolve_finalizers(struct gc_heap *heap) {
 }
 
 static void sweep_ephemerons(struct gc_heap *heap) {
-  return gc_sweep_pending_ephemerons(heap->pending_ephemerons, 0, 1);
+  return gc_sweep_pending_ephemerons(gc_heap_pending_ephemerons(heap), 0, 1);
 }
 
 static int
@@ -1039,6 +1062,10 @@ void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
 }
 
 struct gc_pending_ephemerons *gc_heap_pending_ephemerons(struct gc_heap *heap) {
+#if GC_GENERATIONAL
+  if (is_minor_collection(heap))
+    return heap->nursery_pending_ephemerons;
+#endif
   return heap->pending_ephemerons;
 }
 
@@ -1068,14 +1095,25 @@ void gc_set_finalizer_callback(struct gc_heap *heap,
   gc_finalizer_state_set_callback(heap->finalizer_state, callback);
 }
 
-static int heap_prepare_pending_ephemerons(struct gc_heap *heap) {
-  struct gc_pending_ephemerons *cur = heap->pending_ephemerons;
-  size_t target = heap->size * heap->pending_ephemerons_size_factor;
+static int
+heap_do_prepare_pending_ephemerons(struct gc_heap *heap,
+                                   struct gc_pending_ephemerons **loc,
+                                   size_t size) {
+  size_t target = size * heap->pending_ephemerons_size_factor;
   double slop = heap->pending_ephemerons_size_slop;
 
-  heap->pending_ephemerons = gc_prepare_pending_ephemerons(cur, target, slop);
+  return !!(*loc = gc_prepare_pending_ephemerons(*loc, target, slop));
+}
 
-  return !!heap->pending_ephemerons;
+static int heap_prepare_pending_ephemerons(struct gc_heap *heap) {
+  return heap_do_prepare_pending_ephemerons(heap, &heap->pending_ephemerons,
+                                             heap->size)
+#if GC_GENERATIONAL
+    && heap_do_prepare_pending_ephemerons(heap,
+                                          &heap->nursery_pending_ephemerons,
+                                          heap->per_processor_nursery_size * 2)
+#endif
+    ;
 }
 
 struct gc_options {
