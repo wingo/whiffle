@@ -1222,6 +1222,10 @@ static void
 nofl_space_verify_sweepable_blocks(struct nofl_space *space,
                                    struct nofl_block_list *list)
 {
+  if (GC_CONSERVATIVE_TRACE)
+    // No intrinsic way to measure object size, only the extrinsic
+    // metadata bytes.
+    return;
   for (struct nofl_block_ref b = nofl_block_for_addr(list->blocks);
        !nofl_block_is_null(b);
        b = nofl_block_next(b)) {
@@ -1254,6 +1258,10 @@ nofl_space_verify_sweepable_blocks(struct nofl_space *space,
 static void
 nofl_space_verify_swept_blocks(struct nofl_space *space,
                                struct nofl_block_list *list) {
+  if (GC_CONSERVATIVE_TRACE)
+    // No intrinsic way to measure object size, only the extrinsic
+    // metadata bytes.
+    return;
   for (struct nofl_block_ref b = nofl_block_for_addr(list->blocks);
        !nofl_block_is_null(b);
        b = nofl_block_next(b)) {
@@ -1762,7 +1770,7 @@ static void
 nofl_space_expand(struct nofl_space *space, size_t bytes) {
   double overhead = ((double)NOFL_META_BLOCKS_PER_SLAB) / NOFL_BLOCKS_PER_SLAB;
   ssize_t to_acquire = -nofl_space_maybe_reacquire_memory(space, bytes);
-  if (to_acquire <= 0) return;
+  if (to_acquire < NOFL_BLOCK_SIZE) return;
   to_acquire *= (1 + overhead);
   size_t reserved = align_up(to_acquire, NOFL_SLAB_SIZE);
   size_t nslabs = reserved / NOFL_SLAB_SIZE;
