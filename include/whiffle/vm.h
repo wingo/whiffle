@@ -25,6 +25,7 @@ struct vm_options {
 };
 
 struct vm_process {
+  int *global_safepoint_flag_loc;
   struct vm_options options;
   struct gc_basic_stats stats;
 };
@@ -93,6 +94,22 @@ static void vm_parse_options(struct vm_options *options, int *argc_p,
   *argv_p = argv;
 }
 
+static int vm_should_safepoint(struct vm_process *process,
+                               Thread *thread) {
+  switch (gc_cooperative_safepoint_kind()) {
+  case GC_COOPERATIVE_SAFEPOINT_NONE:
+    return 0;
+  case GC_COOPERATIVE_SAFEPOINT_HEAP_FLAG:
+    return atomic_load_explicit(process->global_safepoint_flag_loc,
+                                memory_order_relaxed);
+  case GC_COOPERATIVE_SAFEPOINT_MUTATOR_FLAG:
+    return atomic_load_explicit(gc_safepoint_flag_loc(thread->mut),
+                                memory_order_relaxed);
+  default:
+    GC_CRASH();
+  }
+}
+
 static VM vm_prepare_process(struct vm_process *process,
                              Thread *thread,
                              int *argc_p, char ***argv_p) {
@@ -119,6 +136,9 @@ static VM vm_prepare_process(struct vm_process *process,
   if (!gc_init(options, NULL, &thread->heap, &thread->mut,
                GC_BASIC_STATS, &process->stats))
     GC_CRASH();
+
+  if (gc_cooperative_safepoint_kind() == GC_COOPERATIVE_SAFEPOINT_HEAP_FLAG)
+    process->global_safepoint_flag_loc = gc_safepoint_flag_loc(thread->mut);
 
   gc_mutator_set_roots(thread->mut, &thread->roots);
   VM vm = (VM){thread, thread->sp_base};

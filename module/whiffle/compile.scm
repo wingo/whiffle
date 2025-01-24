@@ -1,5 +1,5 @@
 ;;; Lightweight Scheme compiler directly to C.
-;;; Copyright (C) 2023, 2024 Andy Wingo.
+;;; Copyright (C) 2023, 2024, 2025 Andy Wingo.
 
 ;;; Derived from (language tree-il compile-bytecode) in Guile, which is:
 ;;; Copyright (C) 2020, 2021 Free Software Foundation, Inc.
@@ -59,7 +59,11 @@
   (match src
     (#(file line column)
      (<-code asm "  // ~a:~a:~a\n" file line column))
-    (_ #f)))
+    (_ #f))
+  (<-code asm "  if (GC_UNLIKELY(vm_should_safepoint(&process, vm.thread))) {\n")
+  (<-code asm "    vm_record_cooperative_safepoint(vm);\n")
+  (<-code asm "    gc_safepoint_slow(vm.thread->mut);\n")
+  (<-code asm "  }\n"))
 
 (define (emit-end-function asm)
   (<-code asm "}\n\n"))
@@ -1097,6 +1101,7 @@ lambda-case clause @var{clause}."
       (call-with-assembler
        (lambda (asm)
          (<-decl asm "#include \"whiffle/vm.h\"\n\n")
+         (<-decl asm "static struct vm_process process;\n\n")
          (let ((by-code (make-hash-table)))
            (for-each (lambda (closure)
                        (hashq-set! by-code (closure-code closure) closure))
@@ -1117,7 +1122,6 @@ lambda-case clause @var{clause}."
             ;; Ensure main is interned as a static closure.
             (constant-ref asm (make-static-closure label))
             (<-code asm "int main (int argc, char *argv[]) {\n")
-            (<-code asm "  struct vm_process process;\n")
             (<-code asm "  Thread thread;\n")
             (<-code asm "  VM vm = vm_prepare_process(&process, &thread, &argc, &argv);\n")
             (<-code asm "  vm = vm_expand_stack(vm, 1);\n")
