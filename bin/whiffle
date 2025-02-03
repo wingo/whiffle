@@ -46,6 +46,7 @@ exec "${GUILE:-guile}" "$0" "$@"
     (format port "    --expr/-e EXPR       input is EXPR instead of a file\n")
     (format port "    --help/-h            print this help message\n")
     (format port "    --output/-o FILE     just compile the input, and write to FILE\n")
+    (format port "    --timeout=NSECS      kill the process if still running after NSECS\n")
     (format port "    --assemble/-S        only produce C file; don't make an executable\n")
     (format port "    --gc=GC              choose gc implementation; see --gc=help\n")
     (format port "    --heap-size=SZ       specify initial heap size\n")
@@ -72,6 +73,7 @@ exec "${GUILE:-guile}" "$0" "$@"
                    (parallelism (value #t))
                    (print-stats (value #f))
                    (output (single-char #\o) (value #t))
+                   (timeout (value #t))
                    (check-heap-consistency (value #f)))))
   (when (option-ref options 'help #f)
     (usage (current-output-port))
@@ -119,6 +121,10 @@ exec "${GUILE:-guile}" "$0" "$@"
       (unless (and (exact-integer? n) (positive? n))
         (error "expected positive exact integer" n))
       n))
+  (define timeout
+    (cond
+     ((option-ref options 'timeout #f) => string->count)
+     (else #f)))
   (define (string->size* s)
     (let ((n (string->number s)))
       (or (and n (real? n) (positive? n)
@@ -182,7 +188,8 @@ exec "${GUILE:-guile}" "$0" "$@"
        #:preserve-builddir? preserve-builddir?
        #:print-stats? print-stats?
        #:echo-output? #t
-       #:check-heap-consistency? check-heap-consistency?)
+       #:check-heap-consistency? check-heap-consistency?
+       #:timeout timeout)
   (exit 0))
 
 (when (batch-mode?)

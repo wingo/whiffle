@@ -1,5 +1,5 @@
 ;;; Lightweight Scheme compiler directly to C.
-;;; Copyright (C) 2023 Andy Wingo.
+;;; Copyright (C) 2023, 2025 Andy Wingo.
 
 ;;; This library is free software; you can redistribute it and/or modify it
 ;;; under the terms of the GNU Lesser General Public License as published by
@@ -18,6 +18,7 @@
   #:use-module (rnrs bytevectors)
   #:use-module (ice-9 binary-ports)
   #:use-module (ice-9 textual-ports)
+  #:use-module (ice-9 control)
   #:use-module (ice-9 match)
   #:use-module (ice-9 format)
   #:use-module (ice-9 threads)
@@ -26,11 +27,6 @@
   #:use-module (whiffle input)
   #:use-module (whiffle paths)
   #:export (run))
-
-(define (bytevector-concatenate args)
-  (call-with-output-bytevector
-   (lambda (p)
-     (for-each (lambda (bv) (put-bytevector p bv)) args))))
 
 (define (gc-options-alist->str options)
   (string-join (map (match-lambda
@@ -43,25 +39,26 @@
   (lock-mutex lock)
   (define cvar (make-condition-variable))
   (define cancelled? #f)
-  (define deadline
-    (+ (get-internal-real-time)
-       (* secs 1.0 internal-time-units-per-second)))
+  (define (now)
+    (match (gettimeofday)
+      ((s . us)
+       (+ s (* us 1e-6)))))
+  (define deadline (+ (now) secs))
   (define thread
     (call-with-new-thread
      (lambda ()
        (lock-mutex lock)
        (let lp ()
-         (let ((dt (- deadline (get-internal-real-time))))
-           (cond
-            (cancelled?
-             (unlock-mutex lock))
-            ((< dt 0)
-             (set! cancelled? #t)
-             (unlock-mutex lock)
-             (on-timeout))
-            (else
-             (wait-condition-variable cvar lock dt)
-             (lp))))))))
+         (cond
+          (cancelled?
+           (unlock-mutex lock))
+          ((< deadline (now))
+           (set! cancelled? #t)
+           (unlock-mutex lock)
+           (on-timeout))
+          (else
+           (wait-condition-variable cvar lock deadline)
+           (lp)))))))
   (unlock-mutex lock)
   (define (cancel!)
     (lock-mutex lock)
@@ -87,26 +84,26 @@
                        #:output output
                        #:error (or echo-error output))))
        (close-port output)
-       (define str
-         (utf8->string
-          (bytevector-concatenate
-           (let lp ()
-             (match (get-bytevector-some input)
-               ((? eof-object?) '())
-               (frag
-                (when echo-output (put-bytevector echo-output frag))
-                (cons frag (lp))))))))
-       (close-port input)
-       (let ((start (get-internal-real-time)))
-         (let lp ()
-          (match (call-with-timeout*
-                  (lambda () (waitpid pid))
-                  (lambda () (kill pid SIGTERM))
-                  timeout)
-            ((_ . 0)
-             (success str))
-            ((_ . status)
-             (failure str status)))))))))
+       (define-values (accum get-bytes) (open-bytevector-output-port))
+       (call-with-timeout*
+        (lambda ()
+          (let lp ()
+            (match (get-bytevector-some input)
+              ((? eof-object?)
+               (close-port input))
+              (frag
+               (put-bytevector accum frag)
+               (when echo-output (put-bytevector echo-output frag))
+               (lp)))))
+        (lambda ()
+          (kill pid SIGTERM))
+        timeout)
+       (define str (utf8->string (get-bytes)))
+       (match (waitpid pid)
+         ((_ . 0)
+          (success str))
+         ((_ . status)
+          (failure str status)))))))
 
 (define (precise-gc? gc)
   (and (not (string-contains gc "bdw"))

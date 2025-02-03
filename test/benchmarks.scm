@@ -63,6 +63,7 @@
                         (heap-size-policy 'fixed)
                         (minimum-serial-heap-size #e10e6)
                         (heap-size-multiplier 1.5)
+                        (timeout 30)
                         (initial-heap-size (lambda (nthreads)
                                              (inexact->exact
                                               (floor
@@ -98,6 +99,7 @@
                        #:parallelism parallelism
                        #:echo-output? echo-output?
                        #:print-stats? #t
+                       #:timeout timeout
                        #:fail (lambda (fmt . args)
                                 (abort-to-prompt tag fmt args))))
                 (define stats (call-with-input-string (last-line output) read))
