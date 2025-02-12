@@ -54,6 +54,7 @@ exec "${GUILE:-guile}" "$0" "$@"
     (format port "    --parallelism=N      limit to number of GC threads\n")
     (format port "    --print-stats        print statistics after the run\n")
     (format port "    --preserve-builddir  keep the build directory around\n")
+    (format port "    --no-tracepoints     omit support for user-space LTTNG tracepoints\n")
     (format port "    --optimize/-O LEVEL  optimize at level LEVEL; default is 2\n")
     (format port "    --warn/-W LEVEL      warn at level LEVEL; default is 2\n")
     (format port "    --check-heap-consistency\n")
@@ -65,6 +66,7 @@ exec "${GUILE:-guile}" "$0" "$@"
                    (help (single-char #\h) (value #f))
                    (assemble (single-char #\S) (value #f))
                    (preserve-builddir (value #f))
+                   (no-tracepoints (value #f))
                    (optimize (single-char #\O) (value #t))
                    (warn (single-char #\W) (value #t))
                    (gc (value #t))
@@ -104,6 +106,8 @@ exec "${GUILE:-guile}" "$0" "$@"
     (option-ref options 'assemble #f))
   (define preserve-builddir?
     (option-ref options 'preserve-builddir #f))
+  (define tracepoints?
+    (not (option-ref options 'no-tracepoints #f)))
   (define out-file
     (option-ref options 'output #f))
   (define optimization-level
@@ -186,6 +190,7 @@ exec "${GUILE:-guile}" "$0" "$@"
        #:heap-size-policy heap-size-policy
        #:parallelism parallelism
        #:preserve-builddir? preserve-builddir?
+       #:tracepoints? tracepoints?
        #:print-stats? print-stats?
        #:echo-output? #t
        #:check-heap-consistency? check-heap-consistency?

@@ -1,4 +1,4 @@
-;;; Copyright © 2023 Andy Wingo
+;;; Copyright © 2023, 2025 Andy Wingo
 ;;;
 ;;; Whippet is free software; you can redistribute it and/or modify it
 ;;; under the terms of the GNU Lesser General Public License as
@@ -14,12 +14,12 @@
 ;;; License along with Whippet.  If not, see
 ;;; <http://www.gnu.org/licenses/>.
 
-;; This file defines a Guix package.  It can be used to spawn an
-;; interactive development environment:
+;; This file defines a Guix package for Whiffle.  It can be used to
+;; spawn an interactive Whiffle development environment:
 ;;
 ;;   guix shell
 ;;
-;; Or it can be used to build Guile from a checkout in an isolated
+;; Or it can be used to build Whiffle from a checkout in an isolated
 ;; environment:
 ;;
 ;;   guix build -f guix.scm
@@ -34,6 +34,7 @@
 ;;   guix build -f guix.scm -s riscv64-linux
 
 (define-module (whiffle-package)
+  #:use-module (ice-9 match)
   #:use-module (guix)
   #:use-module (guix git-download)
   #:use-module (guix build-system gnu)
@@ -42,6 +43,7 @@
   #:use-module (gnu packages bdw-gc)
   #:use-module (gnu packages commencement)
   #:use-module (gnu packages guile)
+  #:use-module (gnu packages instrumentation)
   #:use-module (gnu packages pkg-config)
   #:use-module (gnu packages version-control))
 
@@ -64,7 +66,7 @@
       (native-inputs
        (list guile-next))
       (propagated-inputs
-       (list gcc-toolchain gnu-make libgc pkg-config))
+       (list gcc-toolchain gnu-make libgc pkg-config lttng-ust lttng-tools))
       (outputs '("out"))
       (synopsis "Scheme implementation intended to test the Whippet garbage collector")
       (description

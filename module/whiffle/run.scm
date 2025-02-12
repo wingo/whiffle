@@ -111,6 +111,7 @@
 
 (define* (run #:key input expr output-file assemble? (args '())
               preserve-builddir?
+              tracepoints?
               (optimization-level 2) (warning-level 2)
               (gc "semi")
               ;; Default heap size: 10 MB.
@@ -156,6 +157,8 @@
       (unless assemble?
         (let ((status (system* "make" "--no-print-directory" "-C" dir "V=0"
                                (string-append "GC_COLLECTOR=" gc)
+                               (string-append "GC_USE_LTTNG="
+                                              (if tracepoints? "1" "0"))
                                (format #f "-j~a" (current-processor-count))
                                "out")))
           (unless (zero? (status:exit-val status))
