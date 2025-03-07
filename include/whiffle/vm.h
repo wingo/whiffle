@@ -212,10 +212,10 @@ static inline VM vm_expand_stack(VM vm, size_t slots) {
 
 static inline Value vm_make_closure(VM vm, Code code, size_t nfree) {
   size_t bytes = sizeof(Closure) + nfree * sizeof(Value);
-  Closure *ret = gc_allocate_fast(vm.thread->mut, bytes);
+  Closure *ret = gc_allocate_fast(vm.thread->mut, bytes, GC_ALLOCATION_TAGGED);
   if (GC_UNLIKELY(!ret)) {
     vm_record_cooperative_safepoint(vm);
-    ret = gc_allocate_slow(vm.thread->mut, bytes);
+    ret = gc_allocate_slow(vm.thread->mut, bytes, GC_ALLOCATION_TAGGED);
   }
   tagged_set_payload(&ret->tag, CLOSURE_TAG, nfree);
   ret->code = code;
@@ -255,10 +255,10 @@ static inline Code vm_closure_code(Value closure) {
 
 static inline Value vm_box(VM vm, Value *val_loc) {
   size_t bytes = sizeof(Box);
-  Box *ret = gc_allocate_fast(vm.thread->mut, bytes);
+  Box *ret = gc_allocate_fast(vm.thread->mut, bytes, GC_ALLOCATION_TAGGED);
   if (GC_UNLIKELY(!ret)) {
     vm_record_cooperative_safepoint(vm);
-    ret = gc_allocate_slow(vm.thread->mut, bytes);
+    ret = gc_allocate_slow(vm.thread->mut, bytes, GC_ALLOCATION_TAGGED);
   }
   tagged_set_payload(&ret->tag, BOX_TAG, 0);
   ret->val = *val_loc;
@@ -319,10 +319,10 @@ static inline Value vm_rem(Value a, Value b) {
 
 static inline Value vm_cons(VM vm, Value *car_loc, Value *cdr_loc) {
   size_t bytes = sizeof(Pair);
-  Pair *ret = gc_allocate_fast(vm.thread->mut, bytes);
+  Pair *ret = gc_allocate_fast(vm.thread->mut, bytes, GC_ALLOCATION_TAGGED);
   if (GC_UNLIKELY(!ret)) {
     vm_record_cooperative_safepoint(vm);
-    ret = gc_allocate_slow(vm.thread->mut, bytes);
+    ret = gc_allocate_slow(vm.thread->mut, bytes, GC_ALLOCATION_TAGGED);
   }
   tagged_set_value(&ret->tag, PAIR_TAG, *car_loc);
   ret->cdr = *cdr_loc;
@@ -366,10 +366,10 @@ static inline Value vm_make_vector(VM vm, Value size, Value *init_loc) {
   intptr_t c_size = fixnum_value(size);
   VM_CHECK(0 <= c_size && c_size <= (((uintptr_t)-1) >> 8));
   size_t bytes = sizeof(Vector) + c_size * sizeof(Value);
-  Vector *ret = gc_allocate_fast(vm.thread->mut, bytes);
+  Vector *ret = gc_allocate_fast(vm.thread->mut, bytes, GC_ALLOCATION_TAGGED);
   if (GC_UNLIKELY(!ret)) {
     vm_record_cooperative_safepoint(vm);
-    ret = gc_allocate_slow(vm.thread->mut, bytes);
+    ret = gc_allocate_slow(vm.thread->mut, bytes, GC_ALLOCATION_TAGGED);
   }
   tagged_set_payload(&ret->tag, VECTOR_TAG, c_size);
 
@@ -385,10 +385,10 @@ static inline Value vm_make_vector(VM vm, Value size, Value *init_loc) {
 static inline Value vm_allocate_vector(VM vm, size_t size) {
   VM_CHECK(size <= (((uintptr_t)-1) >> 8));
   size_t bytes = sizeof(Vector) + size * sizeof(Value);
-  Vector *ret = gc_allocate_fast(vm.thread->mut, bytes);
+  Vector *ret = gc_allocate_fast(vm.thread->mut, bytes, GC_ALLOCATION_TAGGED);
   if (GC_UNLIKELY(!ret)) {
     vm_record_cooperative_safepoint(vm);
-    ret = gc_allocate_slow(vm.thread->mut, bytes);
+    ret = gc_allocate_slow(vm.thread->mut, bytes, GC_ALLOCATION_TAGGED);
   }
   tagged_set_payload(&ret->tag, VECTOR_TAG, size);
   return value_from_heap_object(ret);
@@ -451,10 +451,10 @@ static inline Value vm_vector_to_string(VM vm, Value *v) {
       VM_CHECK(is_char(vec->vals[i]));
   }
   size_t bytes = sizeof(String);
-  String *ret = gc_allocate_fast(vm.thread->mut, bytes);
+  String *ret = gc_allocate_fast(vm.thread->mut, bytes, GC_ALLOCATION_TAGGED);
   if (GC_UNLIKELY(!ret)) {
     vm_record_cooperative_safepoint(vm);
-    ret = gc_allocate_slow(vm.thread->mut, bytes);
+    ret = gc_allocate_slow(vm.thread->mut, bytes, GC_ALLOCATION_TAGGED);
   }
   tagged_set_payload(&ret->tag, STRING_TAG, 0);
   ret->chars = value_to_heap_object(*v);
@@ -474,10 +474,10 @@ static inline Value vm_symbol_to_string(Value sym) {
 static inline Value vm_string_to_symbol(VM vm, Value *str) {
   VM_CHECK(is_string(*str));
   size_t bytes = sizeof(Symbol);
-  Symbol *ret = gc_allocate_fast(vm.thread->mut, bytes);
+  Symbol *ret = gc_allocate_fast(vm.thread->mut, bytes, GC_ALLOCATION_TAGGED);
   if (GC_UNLIKELY(!ret)) {
     vm_record_cooperative_safepoint(vm);
-    ret = gc_allocate_slow(vm.thread->mut, bytes);
+    ret = gc_allocate_slow(vm.thread->mut, bytes, GC_ALLOCATION_TAGGED);
   }
   tagged_set_payload(&ret->tag, SYMBOL_TAG, 0);
   ret->str = value_to_heap_object(*str);
@@ -491,10 +491,12 @@ static inline Value vm_make_bytevector(VM vm, Value *size, Value *init) {
   VM_CHECK(0 <= c_size && c_size <= (((uintptr_t)-1) >> 8));
   VM_CHECK(-128 <= c_init && c_init <= 255);
   size_t bytes = sizeof(Bytevector) + c_size * sizeof(uint8_t);
-  Bytevector *ret = gc_allocate_fast(vm.thread->mut, bytes);
+  Bytevector *ret = gc_allocate_fast(vm.thread->mut, bytes,
+                                     GC_ALLOCATION_TAGGED_POINTERLESS);
   if (GC_UNLIKELY(!ret)) {
     vm_record_cooperative_safepoint(vm);
-    ret = gc_allocate_slow(vm.thread->mut, bytes);
+    ret = gc_allocate_slow(vm.thread->mut, bytes,
+                           GC_ALLOCATION_TAGGED_POINTERLESS);
   }
   tagged_set_payload(&ret->tag, BYTEVECTOR_TAG, c_size);
   memset(ret->vals, c_init, c_size);
@@ -584,10 +586,11 @@ static inline Value vm_make_ephemeron_table(VM vm, Value *size_loc) {
   intptr_t c_size = fixnum_value(*size_loc);
   VM_CHECK(0 <= c_size && c_size <= (((uintptr_t)-1) >> 8));
   size_t bytes = sizeof(EphemeronTable) + c_size * sizeof(Value);
-  EphemeronTable *ret = gc_allocate_fast(vm.thread->mut, bytes);
+  EphemeronTable *ret = gc_allocate_fast(vm.thread->mut, bytes,
+                                         GC_ALLOCATION_TAGGED);
   if (GC_UNLIKELY(!ret)) {
     vm_record_cooperative_safepoint(vm);
-    ret = gc_allocate_slow(vm.thread->mut, bytes);
+    ret = gc_allocate_slow(vm.thread->mut, bytes, GC_ALLOCATION_TAGGED);
   }
   tagged_set_payload(&ret->tag, EPHEMERON_TABLE_TAG, c_size);
   // No initialization of fields, as we rely on collector to provide
@@ -872,7 +875,8 @@ static inline Value vm_spawn_thread(struct VM vm, Value *thunk) {
   pthread_cond_signal(&thread->cond);
   pthread_mutex_unlock(&thread->lock);
 
-  ThreadHandle *handle = gc_allocate(vm.thread->mut, sizeof(ThreadHandle));
+  ThreadHandle *handle = gc_allocate(vm.thread->mut, sizeof(ThreadHandle),
+                                     GC_ALLOCATION_TAGGED);
   tagged_set_payload(&handle->tag, THREAD_TAG, 0);
   handle->thread = thread;
   return value_from_heap_object(handle);
