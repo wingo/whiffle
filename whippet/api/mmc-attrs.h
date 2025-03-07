@@ -22,22 +22,48 @@ static inline size_t gc_allocator_allocation_limit_offset(void) {
   return sizeof(uintptr_t) * 1;
 }
 
-static inline size_t gc_allocator_freelist_offset(size_t size) {
+static inline size_t gc_allocator_freelist_offset(size_t size,
+                                                  enum gc_allocation_kind kind) {
   GC_CRASH();
 }
 
 static inline size_t gc_allocator_alloc_table_alignment(void) {
   return 4 * 1024 * 1024;
 }
-static inline uint8_t gc_allocator_alloc_table_begin_pattern(void) {
-  return 1;
+static inline uint8_t gc_allocator_alloc_table_begin_pattern(enum gc_allocation_kind kind) {
+  uint8_t young = 1;
+  uint8_t trace_precisely = 0;
+  uint8_t trace_none = 8;
+  uint8_t trace_conservatively = 16;
+  uint8_t pinned = 16;
+  if (GC_CONSERVATIVE_TRACE) {
+    switch (kind) {
+      case GC_ALLOCATION_TAGGED:
+      case GC_ALLOCATION_UNTAGGED_CONSERVATIVE:
+        return young | trace_conservatively;
+      case GC_ALLOCATION_TAGGED_POINTERLESS:
+        return young | trace_none;
+      case GC_ALLOCATION_UNTAGGED_POINTERLESS:
+        return young | trace_none;
+      default:
+        GC_CRASH();
+      };
+  } else {
+    switch (kind) {
+      case GC_ALLOCATION_TAGGED:
+        return young | trace_precisely;
+      case GC_ALLOCATION_TAGGED_POINTERLESS:
+        return young | trace_none;
+      case GC_ALLOCATION_UNTAGGED_POINTERLESS:
+        return young | trace_none | pinned;
+      case GC_ALLOCATION_UNTAGGED_CONSERVATIVE:
+      default:
+        GC_CRASH();
+    };
+  }
 }
 static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {
-  return 16;
-}
-
-static inline int gc_allocator_needs_clear(void) {
-  return 0;
+  return 32;
 }
 
 static inline enum gc_old_generation_check_kind gc_old_generation_check_kind(size_t obj_size) {
@@ -48,9 +74,11 @@ static inline enum gc_old_generation_check_kind gc_old_generation_check_kind(siz
   }
   return GC_OLD_GENERATION_CHECK_NONE;
 }
-static inline uint8_t gc_old_generation_check_alloc_table_bit_pattern(void) {
-  // The three mark bits.
-  return 2 + 4 + 8;
+static inline uint8_t gc_old_generation_check_alloc_table_tag_mask(void) {
+  return 7;
+}
+static inline uint8_t gc_old_generation_check_alloc_table_young_tag(void) {
+  return 1;
 }
 
 static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t obj_size) {
@@ -60,14 +88,6 @@ static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t obj_size) 
     return GC_WRITE_BARRIER_SLOW;
   }
   return GC_WRITE_BARRIER_NONE;
-}
-static inline size_t gc_write_barrier_card_table_alignment(void) {
-  GC_ASSERT(GC_GENERATIONAL);
-  return 4 * 1024 * 1024;
-}
-static inline size_t gc_write_barrier_card_size(void) {
-  GC_ASSERT(GC_GENERATIONAL);
-  return 256;
 }
 static inline size_t gc_write_barrier_field_table_alignment(void) {
   GC_ASSERT(GC_GENERATIONAL);

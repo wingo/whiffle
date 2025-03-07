@@ -11,6 +11,7 @@
 #include "gc-assert.h"
 #include "gc-ref.h"
 #include "gc-conservative-ref.h"
+#include "gc-trace.h"
 #include "address-map.h"
 #include "address-set.h"
 #include "background-thread.h"
@@ -35,6 +36,7 @@ struct large_object {
 struct large_object_node;
 struct large_object_live_data {
   uint8_t mark;
+  enum gc_trace_kind trace;
 };
 struct large_object_dead_data {
   uint8_t age;
@@ -166,14 +168,27 @@ large_object_space_start_gc(struct large_object_space *space, int is_minor_gc) {
   }
 }
 
-static inline size_t
-large_object_space_object_size(struct large_object_space *space,
-                               struct gc_ref ref) {
+static inline struct gc_trace_plan
+large_object_space_object_trace_plan(struct large_object_space *space,
+                                     struct gc_ref ref) {
   uintptr_t node_bits =
     address_map_lookup(&space->object_map, gc_ref_value(ref), 0);
   GC_ASSERT(node_bits);
   struct large_object_node *node = (struct large_object_node*) node_bits;
-  return node->key.size;
+  switch (node->value.live.trace) {
+    case GC_TRACE_PRECISELY:
+      return (struct gc_trace_plan){ GC_TRACE_PRECISELY, };
+    case GC_TRACE_NONE:
+      return (struct gc_trace_plan){ GC_TRACE_NONE, };
+#if GC_CONSERVATIVE_TRACE
+    case GC_TRACE_CONSERVATIVELY: {
+      return (struct gc_trace_plan){ GC_TRACE_CONSERVATIVELY, node->key.size };
+    }
+    // No large ephemerons.
+#endif
+    default:
+      GC_CRASH();
+  }
 }
 
 static uint8_t*
@@ -212,7 +227,7 @@ large_object_space_mark(struct large_object_space *space, struct gc_ref ref) {
                                                   memory_order_acquire));
 
   size_t pages = node->key.size >> space->page_size_log2;
-  space->live_pages_at_last_collection += pages;
+  atomic_fetch_add(&space->live_pages_at_last_collection, pages);
 
   return 1;
 }
@@ -402,7 +417,8 @@ large_object_space_mark_conservative_ref(struct large_object_space *space,
 }
 
 static void*
-large_object_space_alloc(struct large_object_space *space, size_t npages) {
+large_object_space_alloc(struct large_object_space *space, size_t npages,
+                         enum gc_trace_kind trace) {
   void *ret = NULL;
   pthread_mutex_lock(&space->lock);
   
@@ -422,6 +438,7 @@ large_object_space_alloc(struct large_object_space *space, size_t npages) {
       node->value.is_live = 1;
       memset(&node->value.live, 0, sizeof(node->value.live));
       node->value.live.mark = LARGE_OBJECT_NURSERY;
+      node->value.live.trace = trace;
 
       // If the hole is actually too big, trim its tail.
       if (node->key.size > size) {
@@ -444,37 +461,33 @@ large_object_space_alloc(struct large_object_space *space, size_t npages) {
     
       space->free_pages -= npages;
       ret = (void*)node->key.addr;
+      memset(ret, 0, size);
       break;
     }
   }
+
+  // If we didn't find anything in the quarantine, get fresh pages from the OS.
+  if (!ret) {
+    ret = gc_platform_acquire_memory(size, 0);
+    if (ret) {
+      uintptr_t addr = (uintptr_t)ret;
+      struct large_object k = { addr, size };
+      struct large_object_data v = {0,};
+      v.is_live = 1;
+      v.live.mark = LARGE_OBJECT_NURSERY;
+      v.live.trace = trace;
+
+      pthread_mutex_lock(&space->object_tree_lock);
+      struct large_object_node *node =
+        large_object_tree_insert(&space->object_tree, k, v);
+      uintptr_t node_bits = (uintptr_t)node;
+      address_map_add(&space->object_map, addr, node_bits);
+      space->total_pages += npages;
+      pthread_mutex_unlock(&space->object_tree_lock);
+    }
+  }
+
   pthread_mutex_unlock(&space->lock);
-  return ret;
-}
-
-static void*
-large_object_space_obtain_and_alloc(struct large_object_space *space,
-                                    size_t npages) {
-  size_t bytes = npages * space->page_size;
-  void *ret = gc_platform_acquire_memory(bytes, 0);
-  if (!ret)
-    return NULL;
-
-  uintptr_t addr = (uintptr_t)ret;
-  struct large_object k = { addr, bytes };
-  struct large_object_data v = {0,};
-  v.is_live = 1;
-  v.live.mark = LARGE_OBJECT_NURSERY;
-
-  pthread_mutex_lock(&space->lock);
-  pthread_mutex_lock(&space->object_tree_lock);
-  struct large_object_node *node =
-    large_object_tree_insert(&space->object_tree, k, v);
-  uintptr_t node_bits = (uintptr_t)node;
-  address_map_add(&space->object_map, addr, node_bits);
-  space->total_pages += npages;
-  pthread_mutex_unlock(&space->object_tree_lock);
-  pthread_mutex_unlock(&space->lock);
-
   return ret;
 }
 

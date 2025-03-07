@@ -437,6 +437,7 @@ static void collect(struct gc_mutator *mut, size_t for_alloc) {
   gc_heap_sizer_on_gc(heap->sizer, heap->size, live_size, pause_ns,
                       resize_heap);
   reset_heap_limits(heap);  
+  clear_memory(semi->hp, semi->limit - semi->hp);
 
   HEAP_EVENT(heap, restarting_mutators);
   // fprintf(stderr, "%zd bytes copied\n", (space->size>>1)-(space->limit-space->hp));
@@ -494,9 +495,7 @@ static void* allocate_large(struct gc_mutator *mut, size_t size) {
   while (!semi_space_steal_pages(semi_space, npages))
     collect_for_large_alloc(mut, npages);
 
-  void *ret = large_object_space_alloc(space, npages);
-  if (!ret)
-    ret = large_object_space_obtain_and_alloc(space, npages);
+  void *ret = large_object_space_alloc(space, npages, GC_TRACE_PRECISELY);
 
   if (!ret) {
     perror("weird: we have the space but mmap didn't work");
@@ -506,7 +505,15 @@ static void* allocate_large(struct gc_mutator *mut, size_t size) {
   return ret;
 }
 
-void* gc_allocate_slow(struct gc_mutator *mut, size_t size) {
+void* gc_allocate_slow(struct gc_mutator *mut, size_t size,
+                       enum gc_allocation_kind kind) {
+  if (GC_UNLIKELY(kind != GC_ALLOCATION_TAGGED
+                  && kind != GC_ALLOCATION_TAGGED_POINTERLESS)) {
+    fprintf(stderr, "semispace collector cannot make allocations of kind %d\n",
+            (int)kind);
+    GC_CRASH();
+  }
+
   if (size > gc_allocator_large_threshold())
     return allocate_large(mut, size);
 
@@ -520,13 +527,8 @@ void* gc_allocate_slow(struct gc_mutator *mut, size_t size) {
       continue;
     }
     space->hp = new_hp;
-    // FIXME: Allow allocator to avoid clearing memory?
-    clear_memory(addr, size);
     return (void *)addr;
   }
-}
-void* gc_allocate_pointerless(struct gc_mutator *mut, size_t size) {
-  return gc_allocate(mut, size);
 }
 
 void gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
@@ -534,7 +536,7 @@ void gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
 }
 
 struct gc_ephemeron* gc_allocate_ephemeron(struct gc_mutator *mut) {
-  return gc_allocate(mut, gc_ephemeron_size());
+  return gc_allocate(mut, gc_ephemeron_size(), GC_ALLOCATION_TAGGED);
 }
 
 void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
@@ -543,7 +545,7 @@ void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
 }
 
 struct gc_finalizer* gc_allocate_finalizer(struct gc_mutator *mut) {
-  return gc_allocate(mut, gc_finalizer_size());
+  return gc_allocate(mut, gc_finalizer_size(), GC_ALLOCATION_TAGGED);
 }
 
 void gc_finalizer_attach(struct gc_mutator *mut, struct gc_finalizer *finalizer,

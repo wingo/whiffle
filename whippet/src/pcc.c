@@ -964,9 +964,7 @@ static void* allocate_large(struct gc_mutator *mut, size_t size) {
     trigger_collection(mut, GC_COLLECTION_COMPACTING);
   atomic_fetch_add(&heap->large_object_pages, npages);
 
-  void *ret = large_object_space_alloc(space, npages);
-  if (!ret)
-    ret = large_object_space_obtain_and_alloc(space, npages);
+  void *ret = large_object_space_alloc(space, npages, GC_TRACE_PRECISELY);
 
   if (!ret) {
     perror("weird: we have the space but mmap didn't work");
@@ -980,7 +978,14 @@ static void get_more_empty_blocks_for_mutator(void *mut) {
   trigger_collection(mut, GC_COLLECTION_MINOR);
 }
 
-void* gc_allocate_slow(struct gc_mutator *mut, size_t size) {
+void* gc_allocate_slow(struct gc_mutator *mut, size_t size,
+                       enum gc_allocation_kind kind) {
+  if (GC_UNLIKELY(kind != GC_ALLOCATION_TAGGED
+                  && kind != GC_ALLOCATION_TAGGED_POINTERLESS)) {
+    fprintf(stderr, "pcc collector cannot make allocations of kind %d\n",
+            (int)kind);
+    GC_CRASH();
+  }
   GC_ASSERT(size > 0); // allocating 0 bytes would be silly
 
   if (size > gc_allocator_large_threshold())
@@ -997,12 +1002,7 @@ void* gc_allocate_slow(struct gc_mutator *mut, size_t size) {
       break;
   }
 
-  gc_clear_fresh_allocation(ret, size);
   return gc_ref_heap_object(ret);
-}
-
-void* gc_allocate_pointerless(struct gc_mutator *mut, size_t size) {
-  return gc_allocate(mut, size);
 }
 
 void gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
@@ -1059,7 +1059,7 @@ void gc_safepoint_slow(struct gc_mutator *mut) {
 }
   
 struct gc_ephemeron* gc_allocate_ephemeron(struct gc_mutator *mut) {
-  return gc_allocate(mut, gc_ephemeron_size());
+  return gc_allocate(mut, gc_ephemeron_size(), GC_ALLOCATION_TAGGED);
 }
 
 void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
@@ -1080,7 +1080,7 @@ unsigned gc_heap_ephemeron_trace_epoch(struct gc_heap *heap) {
 }
 
 struct gc_finalizer* gc_allocate_finalizer(struct gc_mutator *mut) {
-  return gc_allocate(mut, gc_finalizer_size());
+  return gc_allocate(mut, gc_finalizer_size(), GC_ALLOCATION_TAGGED);
 }
 
 void gc_finalizer_attach(struct gc_mutator *mut, struct gc_finalizer *finalizer,

@@ -24,18 +24,15 @@ static inline size_t gc_allocator_allocation_limit_offset(void) {
   return sizeof(uintptr_t) * 1;
 }
 
-static inline size_t gc_allocator_freelist_offset(size_t size) {
+static inline size_t gc_allocator_freelist_offset(size_t size,
+                                                  enum gc_allocation_kind kind) {
   GC_CRASH();
-}
-
-static inline int gc_allocator_needs_clear(void) {
-  return 1;
 }
 
 static inline size_t gc_allocator_alloc_table_alignment(void) {
   return 0;
 }
-static inline uint8_t gc_allocator_alloc_table_begin_pattern(void) {
+static inline uint8_t gc_allocator_alloc_table_begin_pattern(enum gc_allocation_kind kind) {
   GC_CRASH();
 }
 static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {
@@ -45,18 +42,15 @@ static inline uint8_t gc_allocator_alloc_table_end_pattern(void) {
 static inline enum gc_old_generation_check_kind gc_old_generation_check_kind(size_t) {
   return GC_OLD_GENERATION_CHECK_NONE;
 }
-static inline uint8_t gc_old_generation_check_alloc_table_bit_pattern(void) {
+static inline uint8_t gc_old_generation_check_alloc_table_tag_mask(void) {
+  GC_CRASH();
+}
+static inline uint8_t gc_old_generation_check_alloc_table_young_tag(void) {
   GC_CRASH();
 }
 
 static inline enum gc_write_barrier_kind gc_write_barrier_kind(size_t) {
   return GC_WRITE_BARRIER_NONE;
-}
-static inline size_t gc_write_barrier_card_table_alignment(void) {
-  GC_CRASH();
-}
-static inline size_t gc_write_barrier_card_size(void) {
-  GC_CRASH();
 }
 static inline size_t gc_write_barrier_field_table_alignment(void) {
   GC_CRASH();
