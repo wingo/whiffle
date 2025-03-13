@@ -68,10 +68,10 @@
   (quotient (* 2 (tree-size (+ max-tree-depth 2)))
             (tree-size depth)))
 
-(define (run-test i)
+(define (run-test i fragmentation)
   (define garbage-size (make-power-law-distribution))
   (define (allocate-garbage!)
-    (let ((size (garbage-size)))
+    (let ((size (* fragmentation (garbage-size))))
       (unless (zero? size) (make-vector (1- size) #f))))
   (define (make-tree depth)
     (and (<= 0 depth)
@@ -136,5 +136,5 @@
     (error "long-lived bytevector has unexpected contents"))
   #t)
 
-(lambda (nthreads)
-  (parallel nthreads (lambda (i) (run-test i))))
+(lambda (nthreads fragmentation)
+  (parallel nthreads (lambda (i) (run-test i fragmentation))))

@@ -1,4 +1,4 @@
-;; Copyright 2023 Andy Wingo
+;; Copyright 2023, 2025 Andy Wingo
 ;; Ported to Scheme from Octane's `splay.js', whose copyright is:
 ;;
 ;; Copyright 2009 the V8 project authors. All rights reserved.
@@ -224,12 +224,13 @@
            (else
             (reassemble current left right)))))))))
 
-(define (run-test thread-id)
+(define (run-iteration)
   (define time-samples '())
   (define time-start (current-microseconds))
-  (define (update-stats! time)
-    (set! time-samples (cons time time-samples))
-    (set! time-start time))
+  (define (add-time-sample!)
+    (let ((time (current-microseconds)))
+      (set! time-samples (cons time time-samples))
+      (set! time-start time)))
 
   (define tree (make-tree))
 
@@ -247,7 +248,7 @@
     (when (< i tree-size)
       (insert-new-node!)
       (when (eq? (%remainder i 20) 18)
-        (update-stats! (current-microseconds)))
+        (add-time-sample!))
       (lp (1+ i))))
 
   ;; Main workload: replace a few nodes in the splay tree.
@@ -262,7 +263,7 @@
                               (node-key greatest)
                               key)))
           (lp (1+ i))))
-      (update-stats! (current-microseconds))
+      (add-time-sample!)
       (lp (1+ i))))
 
   ;; finish: check consistency.
@@ -276,8 +277,16 @@
         (when (pair? tail)
           (unless (< head (car tail))
             (error "splay tree not sorted"))
-          (lp tail))))))
+          (lp tail)))))
 
-(lambda (nthreads)
-  (parallel nthreads (lambda (i) (run-test i))))
+  time-samples)
+
+(define (run-test thread-id iterations)
+  (let lp ((i 0))
+    (when (< i iterations)
+      (run-iteration)
+      (lp (1+ i)))))
+
+(lambda (nthreads iterations)
+  (parallel nthreads (lambda (i) (run-test i iterations))))
 

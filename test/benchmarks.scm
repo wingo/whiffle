@@ -169,17 +169,29 @@
       ...
       (reverse results)))
 
+  ;; MMC nominal overhead is 1/16.  PCC is 100%.
+  (define (scale-mmc-minimum n)
+    (inexact->exact (round (* n 15/16))))
+  (define (scale-pcc-minimum n)
+    (inexact->exact (round (/ n 2))))
+
   (run-many
-   (("gcbench.scm")           #:minimum-serial-heap-size #e20e6)
+   (("gcbench.scm" 0)         #:minimum-serial-heap-size (scale-mmc-minimum
+                                                          #e18.6e6))
    (("quads.scm" 10)          #:minimum-serial-heap-size #e65e6)
    (("ephemerons.scm" 500000) #:minimum-serial-heap-size #e40e6)
-   (("splay.scm")             #:minimum-serial-heap-size #e47e6)
+   (("splay.scm")             #:minimum-serial-heap-size (scale-pcc-minimum
+                                                          #e98e6))
    (("cpstak.scm" 32 16 8 9)  #:minimum-serial-heap-size #e1e6)
    (("eval-fib.scm" 32)       #:minimum-serial-heap-size #e1e6)
-   (("earley.scm" 14)         #:minimum-serial-heap-size #e250e6)
-   (("peval.scm" 12 1)        #:minimum-serial-heap-size #e37e6)
-   (("nboyer.scm" 4)          #:minimum-serial-heap-size #e70e6)
-   (("nboyer.scm" 5)          #:minimum-serial-heap-size #e208e6)))
+   (("earley.scm" 14)         #:minimum-serial-heap-size (scale-pcc-minimum
+                                                          #e473e6))
+   (("peval.scm" 12 1)        #:minimum-serial-heap-size (scale-pcc-minimum
+                                                          #e78e6))
+   (("nboyer.scm" 4)          #:minimum-serial-heap-size (scale-pcc-minimum
+                                                          #e142e6))
+   (("nboyer.scm" 5)          #:minimum-serial-heap-size (scale-pcc-minimum
+                                                          #e422e6))))
 
 (define (string->count str)
   (let ((c (string->number str)))
@@ -193,24 +205,28 @@
       (error "expected a real number greater than 1" str))
     (exact->inexact c)))
 
-(match (program-arguments)
-  ((_) (run-benchmarks))
-  ((_ out-file)
-   (call-with-output-file out-file
-     (lambda (port)
-       (pretty-print (run-benchmarks #:exit-on-failure? #f) port))))
-  ((_ out-file repetitions . heap-size-multipliers)
-   (let ((repetitions (string->count repetitions))
-         (heap-size-multipliers (map string->multiplier heap-size-multipliers)))
+(define main
+  (match-lambda
+    ((_)
+     (run-benchmarks)
+     (format #t "All tests passed.\n"))
+    ((_ out-file)
      (call-with-output-file out-file
        (lambda (port)
-         (pretty-print
-          (append-map (lambda (multiplier)
-                        (run-benchmarks #:heap-size-multiplier multiplier
-                                        #:repetitions repetitions
-                                        #:exit-on-failure? #f))
-                      heap-size-multipliers)
-          port))))))
+         (pretty-print (run-benchmarks #:exit-on-failure? #f) port))))
+    ((_ out-file repetitions . heap-size-multipliers)
+     (let ((repetitions (string->count repetitions))
+           (heap-size-multipliers (map string->multiplier heap-size-multipliers)))
+       (call-with-output-file out-file
+         (lambda (port)
+           (pretty-print
+            (append-map (lambda (multiplier)
+                          (run-benchmarks #:heap-size-multiplier multiplier
+                                          #:repetitions repetitions
+                                          #:exit-on-failure? #f))
+                        heap-size-multipliers)
+            port)))))))
 
-(format #t "All tests passed.\n")
-(exit 0)
+(when (batch-mode?)
+  (main (program-arguments))
+  (exit 0))
