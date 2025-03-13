@@ -104,11 +104,16 @@
                                 (abort-to-prompt tag fmt args))))
                 (define stats (call-with-input-string (last-line output) read))
                 (match stats
-                  (#(mutator-seconds collector-seconds major minor p50 p95 p100)
-                   (format #t "~:[~*~; ~a: ~]pass: ~,3fs (~,3fs gc), ~a major+~a minor, p50 pause ~,3fms (~,3f p95, ~,3f max)\n"
+                  (#(mutator-seconds collector-seconds
+                     mutator-cpu-seconds collector-cpu-seconds
+                     major minor
+                     p50 p95 p100)
+                   (format #t "~:[~*~; ~a: ~]pass: ~,3fs (~,3fs gc), ~,3fCPUs (~,3fCPUs gc), ~a major+~a minor, p50 pause ~,3fms (~,3f p95, ~,3f max)\n"
                            echo-output? configuration
                            (+ mutator-seconds collector-seconds)
                            collector-seconds
+                           (+ mutator-cpu-seconds collector-cpu-seconds)
+                           collector-cpu-seconds
                            major minor (* p50 1e3) (* p95 1e3) (* p100 1e3))))
                 (force-output)
                 (vector (acons configuration stats pass) fail skip))
