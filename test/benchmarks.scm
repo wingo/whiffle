@@ -178,6 +178,8 @@
   (run-many
    (("gcbench.scm" 0)         #:minimum-serial-heap-size (scale-mmc-minimum
                                                           #e18.6e6))
+   (("gcbench.scm" 1)         #:minimum-serial-heap-size (scale-mmc-minimum
+                                                          #e18.6e6))
    (("quads.scm" 10)          #:minimum-serial-heap-size #e65e6)
    (("ephemerons.scm" 500000) #:minimum-serial-heap-size #e40e6)
    (("splay.scm")             #:minimum-serial-heap-size (scale-pcc-minimum
