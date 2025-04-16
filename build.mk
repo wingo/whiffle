@@ -1,16 +1,17 @@
 here:=$(dir $(lastword $(MAKEFILE_LIST)))
-WHIPPET=$(here)whippet/
 WHIFFLE=$(here)
-
 all: out
 
-include $(WHIPPET)embed.mk
+GC_BASE=$(here)whippet/
+GC_EMBEDDER_H=$(WHIFFLE)runtime/whiffle-gc.h
+GC_EMBEDDER_CPPFLAGS=$(WHIFFLE_CPPFLAGS)
+include $(GC_BASE)embed.mk
 
-WHIFFLE_CFLAGS=-I $(WHIFFLE)include -foptimize-sibling-calls
-EMBEDDER_TO_GC_CFLAGS=$(WHIFFLE_CFLAGS) -include $(WHIFFLE)runtime/whiffle-gc.h
+WHIFFLE_CPPFLAGS=-I $(WHIFFLE)include
+WHIFFLE_CFLAGS=-foptimize-sibling-calls
 
 out.o: out.c
-	$(GC_COMPILE) $(WHIFFLE_CFLAGS) $(GC_TO_EMBEDDER_CFLAGS) -c $<
+	$(GC_COMPILE) $(WHIFFLE_CPPFLAGS) $(WHIFFLE_CFLAGS) -c $<
 out: out.o $(GC_OBJS)
 	$(GC_LINK) $^ $(GC_LIBS)
 
