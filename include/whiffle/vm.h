@@ -133,7 +133,7 @@ static VM vm_prepare_process(struct vm_process *process,
       exit(1);
     }
   }
-  if (!gc_init(options, NULL, &thread->heap, &thread->mut,
+  if (!gc_init(options, gc_empty_stack_addr(), &thread->heap, &thread->mut,
                GC_BASIC_STATS, &process->stats))
     GC_CRASH();
 
@@ -790,7 +790,7 @@ static void* vm_thread_transition_to_stopped(void *data) {
 
 struct vm_spawn_thread_data { struct gc_heap *heap; Thread *thread; };
 
-static void* vm_thread_proc_inner(struct gc_stack_addr *stack_base,
+static void* vm_thread_proc_inner(struct gc_stack_addr stack_base,
                                   void *data) {
   struct vm_spawn_thread_data *spawn_data = data;
   struct gc_heap *heap = spawn_data->heap;
