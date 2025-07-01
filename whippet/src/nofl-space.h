@@ -298,7 +298,9 @@ nofl_metadata_byte_for_addr(uintptr_t addr) {
 
 static uint8_t*
 nofl_metadata_byte_for_object(struct gc_ref ref) {
-  return nofl_metadata_byte_for_addr(gc_ref_value(ref));
+  uint8_t *ret = nofl_metadata_byte_for_addr(gc_ref_value(ref));
+  GC_ASSERT(*ret & NOFL_METADATA_BYTE_MARK_MASK);
+  return ret;
 }
 
 static uint8_t*
@@ -516,6 +518,14 @@ nofl_pop_unavailable_block(struct nofl_space *space,
     }
   }
   return nofl_block_null();
+}
+
+static size_t
+nofl_empty_block_count(struct nofl_space *space) {
+  struct gc_lock lock = nofl_space_lock(space);
+  size_t ret = nofl_block_count(&space->empty.list);
+  gc_lock_release(&lock);
+  return ret;
 }
 
 static void
@@ -833,69 +843,99 @@ nofl_allocator_acquire_block_to_sweep(struct nofl_allocator *alloc,
 }
 
 static size_t
-nofl_allocator_next_hole(struct nofl_allocator *alloc,
-                         struct nofl_space *space) {
-  nofl_allocator_finish_hole(alloc);
+nofl_allocator_next_hole_in_block_of_size(struct nofl_allocator *alloc,
+                                          struct nofl_space *space,
+                                          size_t min_granules) {
+  if (!nofl_allocator_has_block(alloc))
+    return 0;
 
-  // Sweep current block for a hole.
-  if (nofl_allocator_has_block(alloc)) {
+  while (1) {
+    nofl_allocator_finish_hole(alloc);
     size_t granules =
       nofl_allocator_next_hole_in_block(alloc, space->survivor_mark);
-    if (granules)
-      return granules;
-    else
+    if (granules == 0) {
       nofl_allocator_release_full_block(alloc, space);
-    GC_ASSERT(!nofl_allocator_has_block(alloc));
-  }
-
-  while (nofl_allocator_acquire_block_to_sweep(alloc, space)) {
-    // This block was marked in the last GC and needs sweeping.
-    // As we sweep we'll want to record how many bytes were live
-    // at the last collection.  As we allocate we'll record how
-    // many granules were wasted because of fragmentation.
-    alloc->block.summary->hole_count = 0;
-    alloc->block.summary->hole_granules = 0;
-    alloc->block.summary->holes_with_fragmentation = 0;
-    alloc->block.summary->fragmentation_granules = 0;
-    size_t granules =
-      nofl_allocator_next_hole_in_block(alloc, space->survivor_mark);
-    if (granules)
+      return 0;
+    }
+    else if (min_granules <= granules)
       return granules;
-    nofl_allocator_release_full_block(alloc, space);
   }
+}
 
+static size_t
+nofl_blocks_to_sweep_for_size(size_t granules) {
+  if (!granules)
+    return -1;
+
+  size_t max_granules = NOFL_GRANULES_PER_BLOCK;
+  GC_ASSERT(granules <= max_granules);
+  return __builtin_clzll(granules) - __builtin_clzll(max_granules);
+}
+
+static size_t
+nofl_allocator_next_hole(struct nofl_allocator *alloc,
+                         struct nofl_space *space,
+                         size_t min_granules) {
+  // Sweep current block for a hole.
   {
-    size_t granules = nofl_allocator_acquire_partly_full_block(alloc, space);
+    size_t granules =
+      nofl_allocator_next_hole_in_block_of_size(alloc, space, min_granules);
     if (granules)
       return granules;
   }
 
-  // We are done sweeping for blocks.  Now take from the empties list.
-  if (nofl_allocator_acquire_empty_block(alloc, space))
-    return NOFL_GRANULES_PER_BLOCK;
+  // Current block
+  size_t blocks_to_sweep = nofl_blocks_to_sweep_for_size(min_granules);
+  while (1) {
+    size_t blocks_swept = 0;
+    for (;
+         blocks_swept < blocks_to_sweep
+           && nofl_allocator_acquire_block_to_sweep(alloc, space);
+         blocks_swept++) {
+      // This block was marked in the last GC and needs sweeping.
+      // As we sweep we'll want to record how many bytes were live
+      // at the last collection.  As we allocate we'll record how
+      // many granules were wasted because of fragmentation.
+      alloc->block.summary->hole_count = 0;
+      alloc->block.summary->hole_granules = 0;
+      alloc->block.summary->holes_with_fragmentation = 0;
+      alloc->block.summary->fragmentation_granules = 0;
+      size_t granules =
+        nofl_allocator_next_hole_in_block_of_size(alloc, space, min_granules);
+      if (granules)
+        return granules;
+    }
 
-  // Couldn't acquire another block; return 0 to cause collection.
-  return 0;
+    while (1) {
+      size_t granules = nofl_allocator_acquire_partly_full_block(alloc, space);
+      if (!granules)
+        break;
+      if (min_granules <= granules)
+        return granules;
+      nofl_allocator_release_full_block(alloc, space);
+    }
+
+    // We are done sweeping for blocks.  Now take from the empties list.
+    if (nofl_allocator_acquire_empty_block(alloc, space))
+      return NOFL_GRANULES_PER_BLOCK;
+
+    // Couldn't acquire another block; return 0 to cause collection.
+    if (blocks_swept == 0)
+      return 0;
+  }
 }
 
 static struct gc_ref
 nofl_allocate(struct nofl_allocator *alloc, struct nofl_space *space,
-              size_t size, void (*gc)(void*), void *gc_data,
-              enum gc_allocation_kind kind) {
+              size_t size, enum gc_allocation_kind kind) {
   GC_ASSERT(size > 0);
   GC_ASSERT(size <= gc_allocator_large_threshold());
   size = align_up(size, NOFL_GRANULE_SIZE);
 
   if (alloc->alloc + size > alloc->sweep) {
     size_t granules = size >> NOFL_GRANULE_SIZE_LOG_2;
-    while (1) {
-      size_t hole = nofl_allocator_next_hole(alloc, space);
-      if (hole >= granules) {
-        break;
-      }
-      if (!hole)
-        gc(gc_data);
-    }
+    if (!nofl_allocator_next_hole(alloc, space, granules))
+      return gc_ref_null();
   }
 
   struct gc_ref ret = gc_ref(alloc->alloc);
@@ -928,12 +968,12 @@ nofl_evacuation_allocate(struct nofl_allocator* alloc, struct nofl_space *space,
 static void
 nofl_finish_sweeping(struct nofl_allocator *alloc,
                      struct nofl_space *space) {
-  while (nofl_allocator_next_hole(alloc, space)) {}
+  while (nofl_allocator_next_hole(alloc, space, 0)) {}
 }
 
 static inline int
 nofl_is_ephemeron(struct gc_ref ref) {
-  uint8_t meta = *nofl_metadata_byte_for_addr(gc_ref_value(ref));
+  uint8_t meta = *nofl_metadata_byte_for_object(ref);
   uint8_t kind = meta & NOFL_METADATA_BYTE_TRACE_KIND_MASK;
   return kind == NOFL_METADATA_BYTE_TRACE_EPHEMERON;
 }
@@ -941,7 +981,7 @@ nofl_is_ephemeron(struct gc_ref ref) {
 static void
 nofl_space_set_ephemeron_flag(struct gc_ref ref) {
   if (gc_has_conservative_intraheap_edges()) {
-    uint8_t *metadata = nofl_metadata_byte_for_addr(gc_ref_value(ref));
+    uint8_t *metadata = nofl_metadata_byte_for_object(ref);
     uint8_t byte = *metadata & ~NOFL_METADATA_BYTE_TRACE_KIND_MASK;
     *metadata = byte | NOFL_METADATA_BYTE_TRACE_EPHEMERON;
   }
@@ -1066,14 +1106,15 @@ nofl_space_estimate_live_bytes_after_gc(struct nofl_space *space,
     nofl_block_count(&space->to_sweep) * NOFL_BLOCK_SIZE * (1 - last_yield);
 
   DEBUG("--- nofl estimate before adjustment: %zu\n", bytes);
-/*
+
   // Assume that if we have pending unavailable bytes after GC that there is a
-  // large object waiting to be allocated, and that probably it survives this GC
-  // cycle.
-  bytes += atomic_load_explicit(&space->pending_unavailable_bytes,
-                                memory_order_acquire);
+  // large object waiting to be allocated, so it is practically in the live set.
+  ssize_t pending = atomic_load_explicit(&space->pending_unavailable_bytes,
+                                         memory_order_acquire);
+  if (pending > 0)
+    bytes += pending;
   DEBUG("--- nofl estimate after adjustment: %zu\n", bytes);
-*/
+
   return bytes;
 }
 
@@ -1559,7 +1600,7 @@ nofl_space_evacuate(struct nofl_space *space, uint8_t *metadata, uint8_t byte,
       gc_atomic_forward_commit(&fwd, new_ref);
       // Now update extent metadata, and indicate to the caller that
       // the object's fields need to be traced.
-      uint8_t *new_metadata = nofl_metadata_byte_for_object(new_ref);
+      uint8_t *new_metadata = nofl_metadata_byte_for_addr(gc_ref_value(new_ref));
       memcpy(new_metadata + 1, metadata + 1, object_granules - 1);
       if (GC_GENERATIONAL)
         byte = clear_logged_bits_in_evacuated_object(byte, new_metadata,
@@ -1617,6 +1658,19 @@ nofl_space_evacuate_or_mark_object(struct nofl_space *space,
 }
 
 static inline int
+nofl_space_mark_object(struct nofl_space *space, struct gc_ref ref,
+                       struct nofl_allocator *evacuate) {
+  uint8_t *metadata = nofl_metadata_byte_for_object(ref);
+  uint8_t byte = *metadata;
+  if (nofl_metadata_byte_has_mark(byte, space->current_mark))
+    return 0;
+
+  GC_ASSERT(!nofl_space_should_evacuate(space, byte, ref));
+
+  return nofl_space_set_nonempty_mark(space, metadata, byte, ref);
+}
+
+static inline int
 nofl_space_forward_if_evacuated(struct nofl_space *space,
                                 struct gc_edge edge,
                                 struct gc_ref ref) {
@@ -1660,11 +1714,18 @@ nofl_space_forward_or_mark_if_traced(struct nofl_space *space,
   return nofl_space_forward_if_evacuated(space, edge, ref);
 }
 
-static inline struct gc_ref
-nofl_space_mark_conservative_ref(struct nofl_space *space,
-                                 struct gc_conservative_ref ref,
-                                 int possibly_interior) {
+struct nofl_resolved_conservative_ref {
+  uintptr_t addr;
+  uint8_t *metadata;
+  uint8_t byte;
+};
+
+static inline struct nofl_resolved_conservative_ref
+nofl_space_resolve_conservative_ref_with_metadata(struct nofl_space *space,
+                                                  struct gc_conservative_ref ref,
+                                                  int possibly_interior) {
   uintptr_t addr = gc_conservative_ref_value(ref);
+  struct nofl_resolved_conservative_ref not_an_object = { 0, };
 
   if (possibly_interior) {
     addr = align_down(addr, NOFL_GRANULE_SIZE);
@@ -1672,57 +1733,81 @@ nofl_space_mark_conservative_ref(struct nofl_space *space,
     // Addr not an aligned granule?  Not an object.
     uintptr_t displacement = addr & (NOFL_GRANULE_SIZE - 1);
     if (!gc_is_valid_conservative_ref_displacement(displacement))
-      return gc_ref_null();
+      return not_an_object;
     addr -= displacement;
   }
 
   // Addr in meta block?  Not an object.
   if ((addr & (NOFL_SLAB_SIZE - 1)) < NOFL_META_BLOCKS_PER_SLAB * NOFL_BLOCK_SIZE)
-    return gc_ref_null();
+    return not_an_object;
 
   // Addr in block that has been paged out?  Not an object.
   if (nofl_block_has_flag(nofl_block_for_addr(addr), NOFL_BLOCK_UNAVAILABLE))
-    return gc_ref_null();
+    return not_an_object;
 
   uint8_t *loc = nofl_metadata_byte_for_addr(addr);
   uint8_t byte = atomic_load_explicit(loc, memory_order_relaxed);
 
-  // Already marked object?  Nothing to do.
-  if (nofl_metadata_byte_has_mark(byte, space->current_mark))
-    return gc_ref_null();
-
-  // Addr is the not start of an unmarked object?  Search backwards if
-  // we have interior pointers, otherwise not an object.
-  if (!nofl_metadata_byte_is_young_or_has_mark(byte, space->survivor_mark)) {
+  // Not pointing to the start of an object?  Scan backwards if the ref
+  // is possibly interior, otherwise bail.
+  if ((byte & NOFL_METADATA_BYTE_MARK_MASK) == 0) {
     if (!possibly_interior)
-      return gc_ref_null();
+      return not_an_object;
 
     uintptr_t block_base = align_down(addr, NOFL_BLOCK_SIZE);
     uint8_t *loc_base = nofl_metadata_byte_for_addr(block_base);
-    do {
-      // Searched past block?  Not an object.
-      if (loc-- == loc_base)
-        return gc_ref_null();
+    uint8_t mask = NOFL_METADATA_BYTE_MARK_MASK | NOFL_METADATA_BYTE_END;
+    loc = scan_backwards_for_byte_with_bits(loc, loc_base, mask);
 
-      byte = atomic_load_explicit(loc, memory_order_relaxed);
+    if (!loc)
+      return not_an_object;
 
-      // Ran into the end of some other allocation?  Not an object, then.
-      if (byte & NOFL_METADATA_BYTE_END)
-        return gc_ref_null();
-      // Object already marked?  Nothing to do.
-      if (nofl_metadata_byte_has_mark(byte, space->current_mark))
-        return gc_ref_null();
-
-      // Continue until we find object start.
-    } while (!nofl_metadata_byte_is_young_or_has_mark(byte, space->survivor_mark));
-
+    byte = atomic_load_explicit(loc, memory_order_relaxed);
+    GC_ASSERT(byte & mask);
+    // Ran into the end of some other allocation?  Not an object, then.
+    if (byte & NOFL_METADATA_BYTE_END)
+      return not_an_object;
     // Found object start, and object is unmarked; adjust addr.
     addr = block_base + (loc - loc_base) * NOFL_GRANULE_SIZE;
   }
 
-  nofl_space_set_nonempty_mark(space, loc, byte, gc_ref(addr));
+  return (struct nofl_resolved_conservative_ref) {addr, loc, byte};
+}
 
-  return gc_ref(addr);
+static inline struct gc_ref
+nofl_space_resolve_conservative_ref(struct nofl_space *space,
+                                    struct gc_conservative_ref ref,
+                                    int possibly_interior) {
+  struct nofl_resolved_conservative_ref resolved =
+    nofl_space_resolve_conservative_ref_with_metadata(space, ref,
+                                                      possibly_interior);
+
+  // Possibly null.
+  return gc_ref(resolved.addr);
+}
+
+static inline struct gc_ref
+nofl_space_mark_conservative_ref(struct nofl_space *space,
+                                 struct gc_conservative_ref ref,
+                                 int possibly_interior) {
+  struct nofl_resolved_conservative_ref resolved =
+    nofl_space_resolve_conservative_ref_with_metadata(space, ref,
+                                                      possibly_interior);
+
+  if (!resolved.addr)
+    return gc_ref_null();
+
+  // Object already marked?  Nothing to do.
+  if (nofl_metadata_byte_has_mark(resolved.byte, space->current_mark))
+    return gc_ref_null();
+
+  GC_ASSERT(nofl_metadata_byte_is_young_or_has_mark(resolved.byte,
+                                                    space->survivor_mark));
+
+  nofl_space_set_nonempty_mark(space, resolved.metadata, resolved.byte,
+                               gc_ref(resolved.addr));
+
+  return gc_ref(resolved.addr);
 }
 
 static inline size_t
@@ -1791,7 +1876,7 @@ nofl_space_add_slabs(struct nofl_space *space, struct nofl_slab *slabs,
     space->slabs[space->nslabs++] = slabs++;
 }
 
-static int
+static size_t
 nofl_space_shrink(struct nofl_space *space, size_t bytes) {
   ssize_t pending = nofl_space_request_release_memory(space, bytes);
   struct gc_lock lock = nofl_space_lock(space);
@@ -1816,7 +1901,7 @@ nofl_space_shrink(struct nofl_space *space, size_t bytes) {
     size_t active = nofl_active_block_count(space);
     size_t target = space->evacuation_minimum_reserve * active;
     ssize_t avail = nofl_block_count(&space->evacuation_targets);
-    while (avail > target && pending > 0) {
+    while (avail-- > target && pending > 0) {
       struct nofl_block_ref block =
         nofl_block_list_pop(&space->evacuation_targets);
       GC_ASSERT(!nofl_block_is_null(block));
@@ -1831,7 +1916,7 @@ nofl_space_shrink(struct nofl_space *space, size_t bytes) {
 
   // It still may be the case we need to page out more blocks.  Only evacuation
   // can help us then!
-  return pending <= 0;
+  return pending <= 0 ? 0 : pending;
 }
       
 static void
@@ -1913,7 +1998,7 @@ nofl_space_init(struct nofl_space *space, size_t size, int atomic,
   space->extents = extents_allocate(10);
   nofl_space_add_slabs(space, slabs, nslabs);
   pthread_mutex_init(&space->lock, NULL);
-  space->evacuation_minimum_reserve = 0.02;
+  space->evacuation_minimum_reserve = GC_CONSERVATIVE_TRACE ? 0.0 : 0.02;
   space->evacuation_reserve = space->evacuation_minimum_reserve;
   space->promotion_threshold = promotion_threshold;
   struct gc_lock lock = nofl_space_lock(space);

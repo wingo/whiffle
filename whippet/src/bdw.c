@@ -5,8 +5,10 @@
 
 #define GC_IMPL 1
 
+#include "gc-align.h"
 #include "gc-api.h"
 #include "gc-ephemeron.h"
+#include "gc-trace.h"
 #include "gc-tracepoint.h"
 
 #include "gc-internal.h"
@@ -52,23 +54,21 @@
 #define GC_INLINE_FREELIST_COUNT (256U / GC_INLINE_GRANULE_BYTES)
 
 struct gc_heap {
-  struct gc_heap *freelist; // see mark_heap
-  pthread_mutex_t lock;
   struct gc_heap_roots *roots;
   struct gc_mutator *mutators;
   struct gc_event_listener event_listener;
   struct gc_finalizer_state *finalizer_state;
   gc_finalizer_callback have_finalizers;
   void *event_listener_data;
+  void* (*allocation_failure)(struct gc_heap *, size_t);
 };
 
 struct gc_mutator {
   void *freelists[GC_INLINE_FREELIST_COUNT];
-  void *pointerless_freelists[GC_INLINE_FREELIST_COUNT];
   struct gc_heap *heap;
   struct gc_mutator_roots *roots;
-  struct gc_mutator *next; // with heap lock
-  struct gc_mutator **prev; // with heap lock
+  struct gc_mutator *next; // with global bdw lock
+  struct gc_mutator **prev; // with global bdw lock
   void *event_listener_data;
 };
 
@@ -116,17 +116,12 @@ allocate_small(void **freelist, size_t idx, enum gc_inline_kind kind) {
     size_t bytes = gc_inline_freelist_object_size(idx);
     GC_generic_malloc_many(bytes, kind, freelist);
     head = *freelist;
-    if (GC_UNLIKELY (!head)) {
-      fprintf(stderr, "ran out of space, heap size %zu\n",
-              GC_get_heap_size());
-      GC_CRASH();
-    }
+    if (GC_UNLIKELY (!head))
+      return __the_bdw_gc_heap->allocation_failure(__the_bdw_gc_heap, bytes);
   }
 
   *freelist = *(void **)(head);
-
-  if (kind == GC_INLINE_KIND_POINTERLESS)
-    memset(head, 0, gc_inline_freelist_object_size(idx));
+  *(void**)head = NULL;
 
   return head;
 }
@@ -135,39 +130,61 @@ void* gc_allocate_slow(struct gc_mutator *mut, size_t size,
                        enum gc_allocation_kind kind) {
   GC_ASSERT(size != 0);
   if (size <= gc_allocator_large_threshold()) {
-    size_t idx = gc_inline_bytes_to_freelist_index(size);
-    void **freelists;
-    enum gc_inline_kind freelist_kind;
     switch (kind) {
       case GC_ALLOCATION_TAGGED:
-      case GC_ALLOCATION_UNTAGGED_CONSERVATIVE:
+      case GC_ALLOCATION_UNTAGGED_CONSERVATIVE: {
+        size_t idx = gc_inline_bytes_to_freelist_index(size);
         return allocate_small(&mut->freelists[idx], idx, GC_INLINE_KIND_NORMAL);
+      }
       case GC_ALLOCATION_TAGGED_POINTERLESS:
       case GC_ALLOCATION_UNTAGGED_POINTERLESS:
-        return allocate_small(&mut->pointerless_freelists[idx], idx,
-                              GC_INLINE_KIND_POINTERLESS);
+        break;
       default:
         GC_CRASH();
     }
-  } else {
-    switch (kind) {
-      case GC_ALLOCATION_TAGGED:
-      case GC_ALLOCATION_UNTAGGED_CONSERVATIVE:
-        return GC_malloc(size);
-      case GC_ALLOCATION_TAGGED_POINTERLESS:
-      case GC_ALLOCATION_UNTAGGED_POINTERLESS: {
-        void *ret = GC_malloc_atomic(size);
+  }
+  switch (kind) {
+    case GC_ALLOCATION_TAGGED:
+    case GC_ALLOCATION_UNTAGGED_CONSERVATIVE: {
+      void *ret = GC_malloc(size);
+      if (GC_LIKELY (ret != NULL))
+        return ret;
+      return __the_bdw_gc_heap->allocation_failure(__the_bdw_gc_heap, size);
+    }
+    case GC_ALLOCATION_TAGGED_POINTERLESS:
+    case GC_ALLOCATION_UNTAGGED_POINTERLESS: {
+      void *ret = GC_malloc_atomic(size);
+      if (GC_LIKELY (ret != NULL)) {
         memset(ret, 0, size);
         return ret;
       }
-      default:
-        GC_CRASH();
+      return __the_bdw_gc_heap->allocation_failure(__the_bdw_gc_heap, size);
     }
+    default:
+      GC_CRASH();
   }
 }
 
 void gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
   // Nothing to do.
+}
+
+struct gc_ref gc_resolve_conservative_ref(struct gc_heap *heap,
+                                          struct gc_conservative_ref ref,
+                                          int possibly_interior) {
+  if (!gc_conservative_ref_might_be_a_heap_object(ref, possibly_interior))
+    return gc_ref_null();
+
+  uintptr_t start = align_down(gc_conservative_ref_value(ref),
+                               GC_INLINE_GRANULE_BYTES);
+  uintptr_t base = (uintptr_t)GC_base((void*)start);
+
+  if (!base)
+    return gc_ref_null();
+  if (possibly_interior || start == base)
+    return gc_ref(base);
+  else
+    return gc_ref_null();
 }
 
 void gc_collect(struct gc_mutator *mut,
@@ -188,6 +205,11 @@ void gc_collect(struct gc_mutator *mut,
   }
 }
 
+int gc_heap_contains(struct gc_heap *heap, struct gc_ref ref) {
+  GC_ASSERT(gc_ref_is_heap_object(ref));
+  return GC_base(gc_ref_heap_object(ref)) != 0;
+}
+
 int gc_object_is_old_generation_slow(struct gc_mutator *mut,
                                      struct gc_ref obj) {
   return 0;
@@ -201,19 +223,47 @@ void gc_write_barrier_slow(struct gc_mutator *mut, struct gc_ref obj,
 int* gc_safepoint_flag_loc(struct gc_mutator *mut) { GC_CRASH(); }
 void gc_safepoint_slow(struct gc_mutator *mut) { GC_CRASH(); }
 
+int gc_safepoint_signal_number(void) {
+  return GC_get_suspend_signal();
+}
+void gc_safepoint_signal_inhibit(struct gc_mutator *mut) {
+  GC_alloc_lock();
+}
+void gc_safepoint_signal_reallow(struct gc_mutator *mut) {
+  GC_alloc_unlock();
+}
+
 struct bdw_mark_state {
   struct GC_ms_entry *mark_stack_ptr;
   struct GC_ms_entry *mark_stack_limit;
 };
 
-static void bdw_mark_edge(struct gc_edge edge, struct gc_heap *heap,
-                          void *visit_data) {
+static void bdw_mark(struct gc_ref ref, struct gc_heap *heap,
+                     void *visit_data) {
   struct bdw_mark_state *state = visit_data;
-  uintptr_t addr = gc_ref_value(gc_edge_ref(edge));
-  state->mark_stack_ptr = GC_MARK_AND_PUSH ((void *) addr,
+  state->mark_stack_ptr = GC_MARK_AND_PUSH ((void *) gc_ref_value(ref),
                                             state->mark_stack_ptr,
                                             state->mark_stack_limit,
                                             NULL);
+}
+
+static void bdw_mark_edge(struct gc_edge edge, struct gc_heap *heap,
+                          void *visit_data) {
+  bdw_mark(gc_edge_ref(edge), heap, visit_data);
+}
+
+static void bdw_mark_range(uintptr_t lo, uintptr_t hi, int possibly_interior,
+                           struct gc_heap *heap, void *visit_data) {
+  struct bdw_mark_state *state = visit_data;
+
+  GC_ASSERT_EQ (lo, align_up (lo, sizeof(void*)));
+  GC_ASSERT_EQ (hi, align_up (hi, sizeof(void*)));
+
+  for (void **walk = (void**)lo, **end = (void**)hi; walk < end; walk++)
+    state->mark_stack_ptr = GC_MARK_AND_PUSH (*walk,
+                                              state->mark_stack_ptr,
+                                              state->mark_stack_limit,
+                                              NULL);
 }
 
 static int heap_gc_kind;
@@ -244,8 +294,15 @@ void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
   gc_ephemeron_init_internal(mut->heap, ephemeron, key, value);
   if (GC_base((void*)gc_ref_value(key))) {
     struct gc_ref *loc = gc_edge_loc(gc_ephemeron_key_edge(ephemeron));
-    GC_register_disappearing_link((void**)loc);
+    GC_general_register_disappearing_link((void**)loc,
+                                          gc_ref_heap_object(key));
   }
+}
+
+struct gc_ref gc_ephemeron_swap_value(struct gc_mutator *mut,
+                                      struct gc_ephemeron *e,
+                                      struct gc_ref ref) {
+  return gc_ephemeron_swap_value_internal(e, ref);
 }
 
 int gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
@@ -305,7 +362,7 @@ mark_ephemeron(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
   
   struct gc_ephemeron *ephemeron = (struct gc_ephemeron*) addr;
 
-  // If this ephemeron is on a freelist, its first word will be a
+  // If this ephemeron is on a freelist, its first word will be a possibly-null
   // freelist link and everything else will be NULL.
   if (!gc_ref_value(gc_edge_ref(gc_ephemeron_value_edge(ephemeron)))) {
     bdw_mark_edge(gc_edge(addr), NULL, &state);
@@ -334,7 +391,7 @@ mark_finalizer(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
   
   struct gc_finalizer *finalizer = (struct gc_finalizer*) addr;
 
-  // If this ephemeron is on a freelist, its first word will be a
+  // If this ephemeron is on a freelist, its first word will be a possibly-null
   // freelist link and everything else will be NULL.
   if (!gc_ref_value(gc_finalizer_object(finalizer))) {
     bdw_mark_edge(gc_edge(addr), NULL, &state);
@@ -356,16 +413,16 @@ mark_heap(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
   
   struct gc_heap *heap = (struct gc_heap*) addr;
 
-  // If this heap is on a freelist... well probably we are screwed, BDW
-  // isn't really made to do multiple heaps in a process.  But still, in
-  // this case, the first word is the freelist and the rest are null.
-  if (heap->freelist) {
-    bdw_mark_edge(gc_edge(addr), NULL, &state);
+  // If this heap is not __the_bdw_gc_heap, either it is on a freelist, or the
+  // heap object is still under construction.  In either case, ignore it.
+  if (heap != __the_bdw_gc_heap)
     return state.mark_stack_ptr;
-  }
 
-  if (heap->roots)
+  if (heap->roots) {
+    gc_trace_heap_pinned_roots(heap->roots, bdw_mark, bdw_mark_range,
+                               heap, &state);
     gc_trace_heap_roots(heap->roots, bdw_mark_edge, heap, &state);
+  }
 
   gc_visit_finalizer_roots(heap->finalizer_state, bdw_mark_edge, heap, &state);
 
@@ -387,28 +444,23 @@ mark_mutator(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
   
   struct gc_mutator *mut = (struct gc_mutator*) addr;
 
-  // If this mutator is on a freelist, its first word will be a
-  // freelist link and everything else will be NULL.
-  if (!mut->heap) {
+  // A mutator is valid and initialized if its "heap" member points to
+  // __the_bdw_gc_heap.  Otherwise it could be on a freelist, in which case its
+  // first word will be a possibly-null freelist link, or it could be under
+  // construction, or it could be exited already.  In any case, mark the free
+  // list link and finish.
+  if (mut->heap != __the_bdw_gc_heap) {
     bdw_mark_edge(gc_edge(addr), NULL, &state);
     return state.mark_stack_ptr;
   }
 
-  for (int i = 0; i < GC_INLINE_FREELIST_COUNT; i++)
-    state.mark_stack_ptr = GC_MARK_AND_PUSH (mut->freelists[i],
-                                             state.mark_stack_ptr,
-                                             state.mark_stack_limit,
-                                             NULL);
+  memset(mut->freelists, 0, sizeof(void*) * GC_INLINE_FREELIST_COUNT);
 
-  for (int i = 0; i < GC_INLINE_FREELIST_COUNT; i++)
-    for (void *head = mut->pointerless_freelists[i]; head; head = *(void**)head)
-      state.mark_stack_ptr = GC_MARK_AND_PUSH (head,
-                                               state.mark_stack_ptr,
-                                               state.mark_stack_limit,
-                                               NULL);
-
-  if (mut->roots)
+  if (mut->roots) {
+    gc_trace_mutator_pinned_roots(mut->roots, bdw_mark, bdw_mark_range,
+                                  mut->heap, &state);
     gc_trace_mutator_roots(mut->roots, bdw_mark_edge, mut->heap, &state);
+  }
 
   state.mark_stack_ptr = GC_MARK_AND_PUSH (mut->next,
                                            state.mark_stack_ptr,
@@ -421,17 +473,17 @@ mark_mutator(GC_word *addr, struct GC_ms_entry *mark_stack_ptr,
 static inline struct gc_mutator *add_mutator(struct gc_heap *heap) {
   struct gc_mutator *ret =
     GC_generic_malloc(sizeof(struct gc_mutator), mutator_gc_kind);
-  ret->heap = heap;
   ret->event_listener_data =
     heap->event_listener.mutator_added(heap->event_listener_data);
 
-  pthread_mutex_lock(&heap->lock);
+  GC_alloc_lock();
   ret->next = heap->mutators;
   ret->prev = &heap->mutators;
   if (ret->next)
     ret->next->prev = &ret->next;
   heap->mutators = ret;
-  pthread_mutex_unlock(&heap->lock);
+  ret->heap = heap;
+  GC_alloc_unlock();
 
   return ret;
 }
@@ -478,7 +530,7 @@ static void on_collection_event(GC_EventType event) {
   }
   case GC_EVENT_MARK_START:
     HEAP_EVENT(mutators_stopped);
-    HEAP_EVENT(prepare_gc, GC_COLLECTION_MAJOR);
+    HEAP_EVENT(prepare_gc, GC_COLLECTION_MAJOR, GC_get_total_bytes());
     break;
   case GC_EVENT_MARK_END:
     HEAP_EVENT(roots_traced);
@@ -519,6 +571,27 @@ static void on_heap_resize(GC_word size) {
 
 uint64_t gc_allocation_counter(struct gc_heap *heap) {
   return GC_get_total_bytes();
+}
+
+static void* allocation_failure(struct gc_heap *heap, size_t size) {
+  fprintf(stderr, "ran out of space, heap size %zu\n", GC_get_heap_size());
+  GC_CRASH();
+  return NULL;
+}
+
+static void* oom_fn(size_t nbytes) {
+  return NULL;
+}
+
+static void warn_fn(char *fmt, GC_word arg) {
+  /* FIXME: Do something better with this.  */
+  fprintf (stderr, fmt, arg);
+}
+
+void gc_heap_set_allocation_failure_handler(struct gc_heap *heap,
+                                            void* (*handler)(struct gc_heap*,
+                                                             size_t)) {
+  heap->allocation_failure = handler;
 }
 
 int gc_init(const struct gc_options *options, struct gc_stack_addr stack_base,
@@ -573,6 +646,7 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr stack_base,
   snprintf(markers, sizeof(markers), "%d", options->common.parallelism);
   setenv("GC_MARKERS", markers, 1);
   GC_init();
+  GC_set_warn_proc (warn_fn);
   size_t current_heap_size = GC_get_heap_size();
   if (options->common.heap_size > current_heap_size)
     GC_expand_hp(options->common.heap_size - current_heap_size);
@@ -597,7 +671,6 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr stack_base,
   }
 
   *heap = GC_generic_malloc(sizeof(struct gc_heap), heap_gc_kind);
-  pthread_mutex_init(&(*heap)->lock, NULL);
 
   (*heap)->event_listener = event_listener;
   (*heap)->event_listener_data = event_listener_data;
@@ -607,6 +680,8 @@ int gc_init(const struct gc_options *options, struct gc_stack_addr stack_base,
   HEAP_EVENT(init, GC_get_heap_size());
   GC_set_on_collection_event(on_collection_event);
   GC_set_on_heap_resize(on_heap_resize);
+  GC_set_oom_fn (oom_fn);
+  (*heap)->allocation_failure = allocation_failure;
 
   *mutator = add_mutator(*heap);
 
@@ -624,20 +699,43 @@ struct gc_mutator* gc_init_for_thread(struct gc_stack_addr stack_base,
   return add_mutator(heap);
 }
 void gc_finish_for_thread(struct gc_mutator *mut) {
-  pthread_mutex_lock(&mut->heap->lock);
+  GC_alloc_lock();
   MUTATOR_EVENT(mut, mutator_removed);
   *mut->prev = mut->next;
   if (mut->next)
     mut->next->prev = mut->prev;
-  pthread_mutex_unlock(&mut->heap->lock);
+  memset(mut, 0, sizeof(*mut));
+  GC_alloc_unlock();
 
   GC_unregister_my_thread();
 }
 
-void* gc_call_without_gc(struct gc_mutator *mut,
-                         void* (*f)(void*),
-                         void *data) {
-  return GC_do_blocking(f, data);
+struct call_with_mutator_data {
+  void* (*proc) (struct gc_mutator*, void*);
+  struct gc_mutator *mutator;
+  void *data;
+};
+
+static void* call_with_mutator (void *p) {
+  struct call_with_mutator_data *data = p;
+  return data->proc(data->mutator, data->data);
+}
+
+void gc_deactivate(struct gc_mutator *mut) {};
+void gc_reactivate(struct gc_mutator *mut) {};
+
+void* gc_deactivate_for_call(struct gc_mutator *mut,
+                             void* (*f)(struct gc_mutator *, void*),
+                             void *data) {
+  struct call_with_mutator_data d = { f, mut, data };
+  return GC_do_blocking(call_with_mutator, &d);
+}
+
+void* gc_reactivate_for_call(struct gc_mutator *mut,
+                             void* (*f)(struct gc_mutator *, void*),
+                             void *data) {
+  struct call_with_mutator_data d = { f, mut, data };
+  return GC_call_with_gc_active(call_with_mutator, &d);
 }
 
 void gc_mutator_set_roots(struct gc_mutator *mut,

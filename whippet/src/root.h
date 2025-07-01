@@ -18,6 +18,8 @@ enum gc_root_kind {
   GC_ROOT_KIND_RESOLVED_EPHEMERONS,
   GC_ROOT_KIND_EDGE,
   GC_ROOT_KIND_EDGE_BUFFER,
+  GC_ROOT_KIND_HEAP_PINNED_ROOTS,
+  GC_ROOT_KIND_MUTATOR_PINNED_ROOTS,
 };
 
 struct gc_root {
@@ -75,6 +77,20 @@ static inline struct gc_root
 gc_root_edge_buffer(struct gc_edge_buffer *buf) {
   struct gc_root ret = { GC_ROOT_KIND_EDGE_BUFFER };
   ret.edge_buffer = buf;
+  return ret;
+}
+
+static inline struct gc_root
+gc_root_heap_pinned_roots(struct gc_heap* heap) {
+  struct gc_root ret = { GC_ROOT_KIND_HEAP_PINNED_ROOTS };
+  ret.heap = heap;
+  return ret;
+}
+
+static inline struct gc_root
+gc_root_mutator_pinned_roots(struct gc_mutator* mutator) {
+  struct gc_root ret = { GC_ROOT_KIND_MUTATOR_PINNED_ROOTS };
+  ret.mutator = mutator;
   return ret;
 }
 

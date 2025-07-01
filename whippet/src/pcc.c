@@ -73,6 +73,7 @@ struct gc_heap {
   struct gc_heap_sizer sizer;
   struct gc_event_listener event_listener;
   void *event_listener_data;
+  void* (*allocation_failure)(struct gc_heap *, size_t);
 };
 
 #define HEAP_EVENT(heap, event, ...) do {                               \
@@ -95,6 +96,7 @@ struct gc_mutator {
   void *event_listener_data;
   struct gc_mutator *next;
   struct gc_mutator *prev;
+  int active;
 };
 
 struct gc_trace_worker_data {
@@ -420,7 +422,7 @@ static inline int do_trace(struct gc_heap *heap, struct gc_edge edge,
   if (large_object_space_contains_with_lock(heap_large_object_space(heap), ref))
     return large_object_space_mark(heap_large_object_space(heap), ref);
   else
-    return gc_extern_space_visit(heap_extern_space(heap), edge, ref);
+    return gc_extern_space_visit(heap_extern_space(heap), ref);
 }
 
 static inline int trace_edge(struct gc_heap *heap, struct gc_edge edge,
@@ -459,7 +461,9 @@ int gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
 
   if (large_object_space_contains_with_lock(heap_large_object_space(heap), ref))
     return large_object_space_is_marked(heap_large_object_space(heap), ref);
-  GC_CRASH();
+
+  // Assume it is in the extern space.
+  return 1;
 }
 
 static int mutators_are_stopping(struct gc_heap *heap) {
@@ -500,6 +504,7 @@ static void add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   while (mutators_are_stopping(heap))
     pthread_cond_wait(&heap->mutator_cond, &heap->lock);
   mut->next = mut->prev = NULL;
+  mut->active = 1;
   struct gc_mutator *tail = heap->mutators;
   if (tail) {
     mut->next = tail;
@@ -519,6 +524,7 @@ static void remove_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   mut->heap = NULL;
   heap_lock(heap);
   heap->mutator_count--;
+  mut->active = 0;
   if (mut->next)
     mut->next->prev = mut->prev;
   if (mut->prev)
@@ -862,10 +868,26 @@ copy_spaces_allocated_bytes(struct gc_heap *heap)
     : heap_mono_space(heap)->allocated_bytes_at_last_gc;
 }
 
-static enum gc_collection_kind
+static int
+resolve_pending_large_allocation_and_compute_success(struct gc_heap *heap,
+                                                     int is_minor_gc) {
+  struct copy_space *space = heap_resizable_space(heap);
+  ssize_t deficit = copy_space_page_out_blocks_until_memory_released(space);
+  if (is_minor_gc)
+    return 1;
+  if (deficit <= 0)
+    return copy_space_can_allocate(space, gc_allocator_large_threshold());
+  deficit = align_up(deficit, COPY_SPACE_BLOCK_SIZE);
+  if (heap->sizer.policy == GC_HEAP_SIZE_FIXED)
+    return 0;
+  resize_heap(heap, heap->size + deficit);
+  return 1;
+}
+
+static int
 collect(struct gc_mutator *mut,
         enum gc_collection_kind requested_kind) GC_NEVER_INLINE;
-static enum gc_collection_kind
+static int
 collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   struct gc_heap *heap = mutator_heap(mut);
   struct large_object_space *lospace = heap_large_object_space(heap);
@@ -885,11 +907,11 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
     heap->is_minor_collection =
 #endif
     GC_GENERATIONAL ? gc_kind == GC_COLLECTION_MINOR : 0;
-  HEAP_EVENT(heap, prepare_gc, gc_kind);
   uint64_t *counter_loc = &heap->total_allocated_bytes_at_last_gc;
   copy_space_add_to_allocation_counter(heap_allocation_space(heap),
                                        counter_loc);
   large_object_space_add_to_allocation_counter(lospace, counter_loc);
+  HEAP_EVENT(heap, prepare_gc, gc_kind, *counter_loc);
   copy_spaces_start_gc(heap, is_minor_gc);
   large_object_space_start_gc(lospace, is_minor_gc);
   gc_extern_space_start_gc(exspace, is_minor_gc);
@@ -920,48 +942,57 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   HEAP_EVENT(heap, live_data_size, live_size);
   gc_heap_sizer_on_gc(heap->sizer, heap->size, live_size, pause_ns,
                       resize_heap);
-  {
-    struct copy_space *space = heap_resizable_space(heap);
-    if (!copy_space_page_out_blocks_until_memory_released(space)
-        && heap->sizer.policy == GC_HEAP_SIZE_FIXED) {
-      fprintf(stderr, "ran out of space, heap size %zu\n", heap->size);
-      GC_CRASH();
-    }
-  }
+  int success =
+    resolve_pending_large_allocation_and_compute_success(heap, is_minor_gc);
   HEAP_EVENT(heap, restarting_mutators);
   allow_mutators_to_continue(heap);
-  return gc_kind;
+  return success;
 }
 
-static void trigger_collection(struct gc_mutator *mut,
-                               enum gc_collection_kind requested_kind) {
+static int trigger_collection(struct gc_mutator *mut,
+                              enum gc_collection_kind requested_kind) {
   struct gc_heap *heap = mutator_heap(mut);
   copy_space_allocator_finish(&mut->allocator, heap_allocation_space(heap));
   if (GC_GENERATIONAL)
     gc_field_set_writer_release_buffer(mutator_field_logger(mut));
   heap_lock(heap);
   int prev_kind = -1;
+  int success = 1;
   while (mutators_are_stopping(heap))
     prev_kind = pause_mutator_for_collection(heap, mut);
   if (prev_kind < (int)requested_kind)
-    collect(mut, requested_kind);
+    success = collect(mut, requested_kind);
   heap_unlock(heap);
+  return success;
 }
 
 void gc_collect(struct gc_mutator *mut, enum gc_collection_kind kind) {
   trigger_collection(mut, kind);
 }
 
+int gc_heap_contains(struct gc_heap *heap, struct gc_ref ref) {
+  GC_ASSERT(gc_ref_is_heap_object(ref));
+  return (GC_GENERATIONAL
+          ? (new_space_contains(heap, ref) || old_space_contains(heap, ref))
+          : copy_space_contains(heap_mono_space(heap), ref))
+    || large_object_space_contains(heap_large_object_space(heap), ref);
+}
+
 static void* allocate_large(struct gc_mutator *mut, size_t size) {
   struct gc_heap *heap = mutator_heap(mut);
   struct large_object_space *space = heap_large_object_space(heap);
+  struct copy_space *copy_space = heap_resizable_space(heap);
 
   size_t npages = large_object_space_npages(space, size);
+  size_t page_bytes = npages << space->page_size_log2;
 
-  copy_space_request_release_memory(heap_resizable_space(heap),
-                                    npages << space->page_size_log2);
-  while (!copy_space_page_out_blocks_until_memory_released(heap_resizable_space(heap)))
-    trigger_collection(mut, GC_COLLECTION_COMPACTING);
+  copy_space_request_release_memory(copy_space, page_bytes);
+  if (copy_space_page_out_blocks_until_memory_released(copy_space) > 0
+      && !trigger_collection(mut, GC_COLLECTION_COMPACTING)) {
+    copy_space_maybe_reacquire_memory(copy_space, page_bytes);
+    return heap->allocation_failure(heap, size);
+  }
+
   atomic_fetch_add(&heap->large_object_pages, npages);
 
   void *ret = large_object_space_alloc(space, npages, GC_TRACE_PRECISELY);
@@ -972,10 +1003,6 @@ static void* allocate_large(struct gc_mutator *mut, size_t size) {
   }
 
   return ret;
-}
-
-static void get_more_empty_blocks_for_mutator(void *mut) {
-  trigger_collection(mut, GC_COLLECTION_MINOR);
 }
 
 void* gc_allocate_slow(struct gc_mutator *mut, size_t size,
@@ -996,16 +1023,23 @@ void* gc_allocate_slow(struct gc_mutator *mut, size_t size,
     ret = copy_space_allocate(&mut->allocator,
                               heap_allocation_space(mutator_heap(mut)),
                               size);
-    if (gc_ref_is_null(ret))
-      trigger_collection(mut, GC_COLLECTION_MINOR);
-    else
+    if (!gc_ref_is_null(ret))
       break;
+    if (trigger_collection(mut, GC_COLLECTION_MINOR))
+      continue;
+    return mutator_heap(mut)->allocation_failure(mutator_heap(mut), size);
   }
 
   return gc_ref_heap_object(ret);
 }
 
 void gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
+  GC_CRASH();
+}
+
+struct gc_ref gc_resolve_conservative_ref(struct gc_heap *heap,
+                                          struct gc_conservative_ref ref,
+                                          int possibly_interior) {
   GC_CRASH();
 }
 
@@ -1058,6 +1092,10 @@ void gc_safepoint_slow(struct gc_mutator *mut) {
   heap_unlock(heap);
 }
   
+int gc_safepoint_signal_number(void) { GC_CRASH(); }
+void gc_safepoint_signal_inhibit(struct gc_mutator *mut) { GC_CRASH(); }
+void gc_safepoint_signal_reallow(struct gc_mutator *mut) { GC_CRASH(); }
+
 struct gc_ephemeron* gc_allocate_ephemeron(struct gc_mutator *mut) {
   return gc_allocate(mut, gc_ephemeron_size(), GC_ALLOCATION_TAGGED);
 }
@@ -1065,6 +1103,14 @@ struct gc_ephemeron* gc_allocate_ephemeron(struct gc_mutator *mut) {
 void gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
                        struct gc_ref key, struct gc_ref value) {
   gc_ephemeron_init_internal(mutator_heap(mut), ephemeron, key, value);
+}
+
+struct gc_ref
+gc_ephemeron_swap_value(struct gc_mutator *mut, struct gc_ephemeron *e,
+                        struct gc_ref ref) {
+  gc_write_barrier(mut, gc_ref_from_heap_object(e), gc_ephemeron_size(),
+                   gc_ephemeron_value_edge(e), ref);
+  return gc_ephemeron_swap_value_internal(e, ref);
 }
 
 struct gc_pending_ephemerons *gc_heap_pending_ephemerons(struct gc_heap *heap) {
@@ -1178,6 +1224,18 @@ static void set_heap_size_from_thread(struct gc_heap *heap, size_t size) {
   pthread_mutex_unlock(&heap->lock);
 }
 
+static void* allocation_failure(struct gc_heap *heap, size_t size) {
+  fprintf(stderr, "ran out of space, heap size %zu\n", heap->size);
+  GC_CRASH();
+  return NULL;
+}
+
+void gc_heap_set_allocation_failure_handler(struct gc_heap *heap,
+                                            void* (*handler)(struct gc_heap*,
+                                                             size_t)) {
+  heap->allocation_failure = handler;
+}
+
 static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
   // *heap is already initialized to 0.
 
@@ -1214,6 +1272,7 @@ static int heap_init(struct gc_heap *heap, const struct gc_options *options) {
                                    allocation_counter_from_thread,
                                    set_heap_size_from_thread,
                                    heap->background_thread);
+  heap->allocation_failure = allocation_failure;
 
   return 1;
 }
@@ -1310,31 +1369,58 @@ void gc_finish_for_thread(struct gc_mutator *mut) {
 
 static void deactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   GC_ASSERT(mut->next == NULL);
+  GC_ASSERT(mut->active);
   copy_space_allocator_finish(&mut->allocator, heap_allocation_space(heap));
   if (GC_GENERATIONAL)
     gc_field_set_writer_release_buffer(mutator_field_logger(mut));
   heap_lock(heap);
   heap->inactive_mutator_count++;
+  mut->active = 0;
   if (all_mutators_stopped(heap))
     pthread_cond_signal(&heap->collector_cond);
   heap_unlock(heap);
 }
 
 static void reactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
+  GC_ASSERT(!mut->active);
   heap_lock(heap);
   while (mutators_are_stopping(heap))
     pthread_cond_wait(&heap->mutator_cond, &heap->lock);
+  mut->active = 1;
   heap->inactive_mutator_count--;
   maybe_increase_max_active_mutator_count(heap);
   heap_unlock(heap);
 }
 
-void* gc_call_without_gc(struct gc_mutator *mut,
-                         void* (*f)(void*),
-                         void *data) {
+void gc_deactivate(struct gc_mutator *mut) {
+  GC_ASSERT(mut->active);
+  deactivate_mutator(mutator_heap(mut), mut);
+}
+
+void gc_reactivate(struct gc_mutator *mut) {
+  GC_ASSERT(!mut->active);
+  reactivate_mutator(mutator_heap(mut), mut);
+}
+
+void* gc_deactivate_for_call(struct gc_mutator *mut,
+                             void* (*f)(struct gc_mutator*, void*),
+                             void *data) {
   struct gc_heap *heap = mutator_heap(mut);
   deactivate_mutator(heap, mut);
-  void *ret = f(data);
+  void *ret = f(mut, data);
   reactivate_mutator(heap, mut);
+  return ret;
+}
+
+void* gc_reactivate_for_call(struct gc_mutator *mut,
+                             void* (*f)(struct gc_mutator*, void*),
+                             void *data) {
+  struct gc_heap *heap = mutator_heap(mut);
+  int reactivate = !mut->active;
+  if (reactivate)
+    reactivate_mutator(heap, mut);
+  void *ret = f(mut, data);
+  if (reactivate)
+    deactivate_mutator(heap, mut);
   return ret;
 }

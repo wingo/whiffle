@@ -4,9 +4,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#define GC_IMPL 1
+
 #include "gc-api.h"
 
-#define GC_IMPL 1
 #include "gc-internal.h"
 
 #include "background-thread.h"
@@ -54,6 +55,7 @@ struct gc_heap {
   struct gc_heap_roots *roots;
   struct gc_mutator *mutators;
   long count;
+  long count_at_last_growth;
   struct gc_tracer tracer;
   double fragmentation_low_threshold;
   double fragmentation_high_threshold;
@@ -66,6 +68,7 @@ struct gc_heap {
   struct gc_heap_sizer sizer;
   struct gc_event_listener event_listener;
   void *event_listener_data;
+  void* (*allocation_failure)(struct gc_heap*, size_t);
 };
 
 #define HEAP_EVENT(heap, event, ...) do {                               \
@@ -87,6 +90,7 @@ struct gc_mutator {
   void *event_listener_data;
   struct gc_mutator *next;
   struct gc_mutator *prev;
+  int active;
 };
 
 struct gc_trace_worker_data {
@@ -143,7 +147,7 @@ do_trace(struct gc_heap *heap, struct gc_edge edge, struct gc_ref ref,
   else if (large_object_space_contains_with_lock(heap_large_object_space(heap), ref))
     return large_object_space_mark(heap_large_object_space(heap), ref);
   else
-    return gc_extern_space_visit(heap_extern_space(heap), edge, ref);
+    return gc_extern_space_visit(heap_extern_space(heap), ref);
 }
 
 static inline int
@@ -154,6 +158,34 @@ trace_edge(struct gc_heap *heap, struct gc_edge edge,
     return 0;
 
   int is_new = do_trace(heap, edge, ref, data);
+
+  if (is_new &&
+      GC_UNLIKELY(atomic_load_explicit(&heap->check_pending_ephemerons,
+                                       memory_order_relaxed)))
+    gc_resolve_pending_ephemerons(ref, heap);
+
+  return is_new;
+}
+
+static inline int
+do_trace_pinned(struct gc_heap *heap, struct gc_ref ref,
+                struct gc_trace_worker_data *data) {
+  if (GC_LIKELY(nofl_space_contains(heap_nofl_space(heap), ref)))
+    return nofl_space_mark_object(heap_nofl_space(heap), ref, &data->allocator);
+  else if (large_object_space_contains_with_lock(heap_large_object_space(heap),
+                                                 ref))
+    return large_object_space_mark(heap_large_object_space(heap), ref);
+  else
+    return gc_extern_space_visit(heap_extern_space(heap), ref);
+}
+
+static inline int
+trace_pinned_edge(struct gc_heap *heap, struct gc_ref ref,
+                  struct gc_trace_worker_data *data) {
+  if (gc_ref_is_null(ref) || gc_ref_is_immediate(ref))
+    return 0;
+
+  int is_new = do_trace_pinned(heap, ref, data);
 
   if (is_new &&
       GC_UNLIKELY(atomic_load_explicit(&heap->check_pending_ephemerons,
@@ -178,7 +210,8 @@ gc_visit_ephemeron_key(struct gc_edge edge, struct gc_heap *heap) {
   if (large_object_space_contains_with_lock(lospace, ref))
     return large_object_space_is_marked(lospace, ref);
 
-  GC_CRASH();
+  // Assume it is in the extern space.
+  return 1;
 }
 
 static int
@@ -215,6 +248,7 @@ add_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   while (mutators_are_stopping(heap))
     pthread_cond_wait(&heap->mutator_cond, &heap->lock);
   mut->next = mut->prev = NULL;
+  mut->active = 1;
   struct gc_mutator *tail = heap->mutators;
   if (tail) {
     mut->next = tail;
@@ -234,6 +268,7 @@ remove_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   mut->heap = NULL;
   heap_lock(heap);
   heap->mutator_count--;
+  mut->active = 0;
   if (mut->next)
     mut->next->prev = mut->prev;
   if (mut->prev)
@@ -269,6 +304,17 @@ tracer_visit(struct gc_edge edge, struct gc_heap *heap, void *trace_data) {
     gc_trace_worker_enqueue(worker, gc_edge_ref(edge));
 }
 
+static inline void
+tracer_visit_pinned_root(struct gc_ref ref, struct gc_heap *heap,
+                         void *trace_data) GC_ALWAYS_INLINE;
+static inline void
+tracer_visit_pinned_root(struct gc_ref ref, struct gc_heap *heap,
+                         void *trace_data) {
+  struct gc_trace_worker *worker = trace_data;
+  if (trace_pinned_edge(heap, ref, gc_trace_worker_data(worker)))
+    gc_trace_worker_enqueue(worker, ref);
+}
+
 static inline int
 trace_remembered_edge(struct gc_edge edge, struct gc_heap *heap, void *trace_data) {
   tracer_visit(edge, heap, trace_data);
@@ -276,6 +322,9 @@ trace_remembered_edge(struct gc_edge edge, struct gc_heap *heap, void *trace_dat
   return 1;
 }
 
+static inline struct gc_ref
+do_trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
+                          int possibly_interior) GC_ALWAYS_INLINE;
 static inline struct gc_ref
 do_trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
                           int possibly_interior) {
@@ -293,6 +342,9 @@ do_trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
 
 static inline struct gc_ref
 trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
+                       int possibly_interior) GC_ALWAYS_INLINE;
+static inline struct gc_ref
+trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
                        int possibly_interior) {
   struct gc_ref ret = do_trace_conservative_ref(heap, ref, possibly_interior);
   if (!gc_ref_is_null(ret)) {
@@ -304,6 +356,11 @@ trace_conservative_ref(struct gc_heap *heap, struct gc_conservative_ref ref,
   return ret;
 }
 
+static inline void
+tracer_trace_conservative_ref(struct gc_conservative_ref ref,
+                              struct gc_heap *heap,
+                              struct gc_trace_worker *worker,
+                              int possibly_interior) GC_ALWAYS_INLINE;
 static inline void
 tracer_trace_conservative_ref(struct gc_conservative_ref ref,
                               struct gc_heap *heap,
@@ -324,12 +381,30 @@ load_conservative_ref(uintptr_t addr) {
 
 static inline void
 trace_conservative_edges(uintptr_t low, uintptr_t high, int possibly_interior,
-                         struct gc_heap *heap, struct gc_trace_worker *worker) {
-  GC_ASSERT(low == align_down(low, sizeof(uintptr_t)));
-  GC_ASSERT(high == align_down(high, sizeof(uintptr_t)));
+                         struct gc_heap *heap, void *data) GC_ALWAYS_INLINE;
+static inline void
+trace_conservative_edges(uintptr_t low, uintptr_t high, int possibly_interior,
+                         struct gc_heap *heap, void *data) {
+  struct gc_trace_worker *worker = data;
+  GC_ASSERT_EQ(low, align_down(low, sizeof(uintptr_t)));
+  GC_ASSERT_EQ(high, align_down(high, sizeof(uintptr_t)));
   for (uintptr_t addr = low; addr < high; addr += sizeof(uintptr_t))
     tracer_trace_conservative_ref(load_conservative_ref(addr), heap, worker,
                                   possibly_interior);
+}
+
+static void
+trace_conservative_edges_wrapper(uintptr_t low, uintptr_t high,
+                                 int possibly_interior,
+                                 struct gc_heap *heap, void *data) GC_NEVER_INLINE;
+static void
+trace_conservative_edges_wrapper(uintptr_t low, uintptr_t high,
+                                 int possibly_interior,
+                                 struct gc_heap *heap, void *data) {
+  if (possibly_interior)
+    trace_conservative_edges(low, high, 1, heap, data);
+  else
+    trace_conservative_edges(low, high, 0, heap, data);
 }
 
 static inline struct gc_trace_plan
@@ -397,6 +472,18 @@ trace_root(struct gc_root root, struct gc_heap *heap,
   case GC_ROOT_KIND_EDGE_BUFFER:
     gc_field_set_visit_edge_buffer(&heap->remembered_set, root.edge_buffer,
                                    trace_remembered_edge, heap, worker);
+    break;
+  case GC_ROOT_KIND_HEAP_PINNED_ROOTS:
+    gc_trace_heap_pinned_roots(root.heap->roots,
+                               tracer_visit_pinned_root,
+                               trace_conservative_edges_wrapper,
+                               heap, worker);
+    break;
+  case GC_ROOT_KIND_MUTATOR_PINNED_ROOTS:
+    gc_trace_mutator_pinned_roots(root.mutator->roots,
+                                  tracer_visit_pinned_root,
+                                  trace_conservative_edges_wrapper,
+                                  heap, worker);
     break;
   default:
     GC_CRASH();
@@ -474,7 +561,10 @@ resize_heap(struct gc_heap *heap, size_t new_size) {
   if (new_size < heap->size)
     nofl_space_shrink(heap_nofl_space(heap), heap->size - new_size);
   else
-    nofl_space_expand(heap_nofl_space(heap), new_size - heap->size);
+    {
+      heap->count_at_last_growth = heap->count;
+      nofl_space_expand(heap_nofl_space(heap), new_size - heap->size);
+    }
 
   heap->size = new_size;
   HEAP_EVENT(heap, heap_resized, new_size);
@@ -511,20 +601,41 @@ heap_estimate_live_data_after_gc(struct gc_heap *heap,
   return bytes;
 }
 
+static int
+compute_progress(struct gc_heap *heap, uintptr_t allocation_since_last_gc) {
+  struct nofl_space *nofl = heap_nofl_space(heap);
+  return allocation_since_last_gc > nofl_space_fragmentation(nofl);
+}
+
 static void
-detect_out_of_memory(struct gc_heap *heap, uintptr_t allocation_since_last_gc) {
-  if (heap->sizer.policy != GC_HEAP_SIZE_FIXED)
+grow_heap_if_necessary(struct gc_heap *heap,
+                       enum gc_collection_kind gc_kind,
+                       int progress)
+{
+  if (heap->sizer.policy == GC_HEAP_SIZE_FIXED)
     return;
 
-  if (allocation_since_last_gc > nofl_space_fragmentation(heap_nofl_space(heap)))
-    return;
+  struct nofl_space *nofl = heap_nofl_space(heap);
+  size_t pending = nofl_space_shrink(nofl, 0);
 
-  if (heap->gc_kind == GC_COLLECTION_MINOR)
-    return;
+  // If we cannot defragment and are making no progress but have a
+  // growable heap, expand by 25% to add some headroom.
+  size_t needed_headroom =
+    GC_CONSERVATIVE_TRACE
+    ? (progress ? 0 : nofl_active_block_count (nofl) * NOFL_BLOCK_SIZE / 4)
+    : 0;
+  size_t headroom = nofl_empty_block_count(nofl) * NOFL_BLOCK_SIZE;
 
-  // No allocation since last gc: out of memory.
-  fprintf(stderr, "ran out of space, heap size %zu\n", heap->size);
-  GC_CRASH();
+  if (headroom < needed_headroom + pending)
+    resize_heap(heap, heap->size - headroom + needed_headroom + pending);
+}
+
+static int
+compute_success(struct gc_heap *heap, enum gc_collection_kind gc_kind,
+                int progress) {
+  return progress
+    || gc_kind == GC_COLLECTION_MINOR
+    || heap->sizer.policy != GC_HEAP_SIZE_FIXED;
 }
 
 static double
@@ -637,9 +748,13 @@ enqueue_mutator_conservative_roots(struct gc_heap *heap) {
     int possibly_interior = gc_mutator_conservative_roots_may_be_interior();
     for (struct gc_mutator *mut = heap->mutators;
          mut;
-         mut = mut->next)
+         mut = mut->next) {
       gc_stack_visit(&mut->stack, enqueue_conservative_roots, heap,
                      &possibly_interior);
+      if (mut->roots)
+        gc_tracer_add_root(&heap->tracer,
+                           gc_root_mutator_pinned_roots(mut));
+    }
     return 1;
   }
   return 0;
@@ -651,6 +766,8 @@ enqueue_global_conservative_roots(struct gc_heap *heap) {
     int possibly_interior = 0;
     gc_platform_visit_global_conservative_roots
       (enqueue_conservative_roots, heap, &possibly_interior);
+    if (heap->roots)
+      gc_tracer_add_root(&heap->tracer, gc_root_heap_pinned_roots(heap));
     return 1;
   }
   return 0;
@@ -750,12 +867,10 @@ sweep_ephemerons(struct gc_heap *heap) {
   return gc_sweep_pending_ephemerons(heap->pending_ephemerons, 0, 1);
 }
 
-static void collect(struct gc_mutator *mut,
-                    enum gc_collection_kind requested_kind,
-                    int requested_by_user) GC_NEVER_INLINE;
-static void
-collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind,
-        int requested_by_user) {
+static int collect(struct gc_mutator *mut,
+                   enum gc_collection_kind requested_kind) GC_NEVER_INLINE;
+static int
+collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
   struct gc_heap *heap = mutator_heap(mut);
   struct nofl_space *nofl_space = heap_nofl_space(heap);
   struct large_object_space *lospace = heap_large_object_space(heap);
@@ -773,12 +888,11 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind,
   nofl_space_add_to_allocation_counter(nofl_space, &allocation_counter);
   large_object_space_add_to_allocation_counter(lospace, &allocation_counter);
   heap->total_allocated_bytes_at_last_gc += allocation_counter;
-  if (!requested_by_user)
-    detect_out_of_memory(heap, allocation_counter);
+  int progress = compute_progress(heap, allocation_counter);
   enum gc_collection_kind gc_kind =
     determine_collection_kind(heap, requested_kind);
   int is_minor = gc_kind == GC_COLLECTION_MINOR;
-  HEAP_EVENT(heap, prepare_gc, gc_kind);
+  HEAP_EVENT(heap, prepare_gc, gc_kind, heap->total_allocated_bytes_at_last_gc);
   nofl_space_prepare_gc(nofl_space, gc_kind);
   large_object_space_start_gc(lospace, is_minor);
   gc_extern_space_start_gc(exspace, is_minor);
@@ -818,16 +932,54 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind,
   DEBUG("--- total live bytes estimate: %zu\n", live_bytes_estimate);
   gc_heap_sizer_on_gc(heap->sizer, heap->size, live_bytes_estimate, pause_ns,
                       resize_heap);
+  grow_heap_if_necessary(heap, gc_kind, progress);
   heap->size_at_last_gc = heap->size;
   HEAP_EVENT(heap, restarting_mutators);
   allow_mutators_to_continue(heap);
+  return compute_success(heap, gc_kind, progress);
 }
 
-static void
+static int
+maybe_grow_heap (struct gc_heap *heap, size_t for_allocation)
+{
+  if (!for_allocation)
+    return 0;
+  if (heap->sizer.policy == GC_HEAP_SIZE_FIXED)
+    return 0;
+
+  pthread_mutex_lock(&heap->lock);
+  if (heap->count_at_last_growth == heap->count)
+    {
+      pthread_mutex_unlock(&heap->lock);
+      return 0;
+    }
+
+  uint64_t progress = 0;
+  nofl_space_add_to_allocation_counter(heap_nofl_space(heap), &progress);
+  large_object_space_add_to_allocation_counter(heap_large_object_space(heap),
+                                               &progress);
+  double yield_at_last_gc = heap_last_gc_yield (heap);
+  uint64_t expected_progress = heap->size_at_last_gc * yield_at_last_gc;
+  if (progress < expected_progress / 2)
+    {
+      resize_heap(heap, heap->size + expected_progress / 2);
+      pthread_mutex_unlock(&heap->lock);
+      return 1;
+    }
+
+  pthread_mutex_unlock(&heap->lock);
+  return 0;
+}
+
+static int
 trigger_collection(struct gc_mutator *mut,
                    enum gc_collection_kind requested_kind,
-                   int requested_by_user) {
+                   size_t for_allocation) {
   struct gc_heap *heap = mutator_heap(mut);
+
+  if (maybe_grow_heap (heap, for_allocation))
+    return 1;
+
   int prev_kind = -1;
   gc_stack_capture_hot(&mut->stack);
   nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
@@ -836,14 +988,23 @@ trigger_collection(struct gc_mutator *mut,
   heap_lock(heap);
   while (mutators_are_stopping(heap))
     prev_kind = pause_mutator_for_collection(heap, mut);
+  int success = 1;
   if (prev_kind < (int)requested_kind)
-    collect(mut, requested_kind, requested_by_user);
+    success = collect(mut, requested_kind);
   heap_unlock(heap);
+  return success;
 }
 
 void
 gc_collect(struct gc_mutator *mut, enum gc_collection_kind kind) {
-  trigger_collection(mut, kind, 1);
+  trigger_collection(mut, kind, 0);
+}
+
+int
+gc_heap_contains(struct gc_heap *heap, struct gc_ref ref) {
+  GC_ASSERT(gc_ref_is_heap_object(ref));
+  return nofl_space_contains(heap_nofl_space(heap), ref)
+    || large_object_space_contains(heap_large_object_space(heap), ref);
 }
 
 int*
@@ -863,6 +1024,10 @@ gc_safepoint_slow(struct gc_mutator *mut) {
     pause_mutator_for_collection(heap, mut);
   heap_unlock(heap);
 }
+
+int gc_safepoint_signal_number(void) { GC_CRASH(); }
+void gc_safepoint_signal_inhibit(struct gc_mutator *mut) { GC_CRASH(); }
+void gc_safepoint_signal_reallow(struct gc_mutator *mut) { GC_CRASH(); }
 
 static enum gc_trace_kind
 compute_trace_kind(enum gc_allocation_kind kind) {
@@ -903,8 +1068,10 @@ allocate_large(struct gc_mutator *mut, size_t size,
   nofl_space_request_release_memory(nofl_space,
                                     npages << lospace->page_size_log2);
 
-  while (!nofl_space_shrink(nofl_space, 0))
-    trigger_collection(mut, GC_COLLECTION_COMPACTING, 0);
+  while (nofl_space_shrink(nofl_space, 0)) {
+    if (!trigger_collection(mut, GC_COLLECTION_COMPACTING, size))
+      return heap->allocation_failure(heap, size);
+  }
   atomic_fetch_add(&heap->large_object_pages, npages);
 
   void *ret = large_object_space_alloc(lospace, npages, kind);
@@ -917,11 +1084,6 @@ allocate_large(struct gc_mutator *mut, size_t size,
   return ret;
 }
 
-static void
-collect_for_small_allocation(void *mut) {
-  trigger_collection(mut, GC_COLLECTION_ANY, 0);
-}
-
 void*
 gc_allocate_slow(struct gc_mutator *mut, size_t size,
                  enum gc_allocation_kind kind) {
@@ -930,10 +1092,16 @@ gc_allocate_slow(struct gc_mutator *mut, size_t size,
   if (size > gc_allocator_large_threshold())
     return allocate_large(mut, size, compute_trace_kind(kind));
 
-  return gc_ref_heap_object(nofl_allocate(&mut->allocator,
-                                          heap_nofl_space(mutator_heap(mut)),
-                                          size, collect_for_small_allocation,
-                                          mut, kind));
+  struct gc_heap *heap = mutator_heap(mut);
+  while (1) {
+    struct gc_ref ret = nofl_allocate(&mut->allocator, heap_nofl_space(heap),
+                                      size, kind);
+    if (!gc_ref_is_null(ret))
+      return gc_ref_heap_object(ret);
+    if (trigger_collection(mut, GC_COLLECTION_ANY, size))
+      continue;
+    return heap->allocation_failure(heap, size);
+  }
 }
 
 void
@@ -942,6 +1110,23 @@ gc_pin_object(struct gc_mutator *mut, struct gc_ref ref) {
   if (nofl_space_contains(nofl, ref))
     nofl_space_pin_object(nofl, ref);
   // Otherwise if it's a large or external object, it won't move.
+}
+
+struct gc_ref
+gc_resolve_conservative_ref(struct gc_heap *heap,
+                            struct gc_conservative_ref ref,
+                            int possibly_interior)
+{
+  if (!gc_conservative_ref_might_be_a_heap_object(ref, possibly_interior))
+    return gc_ref_null();
+
+  struct nofl_space *nofl_space = heap_nofl_space(heap);
+  if (GC_LIKELY(nofl_space_contains_conservative_ref(nofl_space, ref)))
+    return nofl_space_resolve_conservative_ref(nofl_space, ref, possibly_interior);
+
+  struct large_object_space *lospace = heap_large_object_space(heap);
+  return large_object_space_resolve_conservative_ref(lospace, ref,
+                                                     possibly_interior);
 }
 
 int
@@ -992,6 +1177,14 @@ gc_ephemeron_init(struct gc_mutator *mut, struct gc_ephemeron *ephemeron,
   gc_ephemeron_init_internal(mutator_heap(mut), ephemeron, key, value);
   // No write barrier: we require that the ephemeron be newer than the
   // key or the value.
+}
+
+struct gc_ref
+gc_ephemeron_swap_value(struct gc_mutator *mut, struct gc_ephemeron *e,
+                        struct gc_ref ref) {
+  gc_write_barrier(mut, gc_ref_from_heap_object(e), gc_ephemeron_size(),
+                   gc_ephemeron_value_edge(e), ref);
+  return gc_ephemeron_swap_value_internal(e, ref);
 }
 
 struct gc_pending_ephemerons *
@@ -1109,6 +1302,18 @@ static void set_heap_size_from_thread(struct gc_heap *heap, size_t size) {
   pthread_mutex_unlock(&heap->lock);
 }
 
+static void* allocation_failure(struct gc_heap *heap, size_t size) {
+  fprintf(stderr, "ran out of space, heap size %zu\n", heap->size);
+  GC_CRASH();
+  return NULL;
+}
+
+void gc_heap_set_allocation_failure_handler(struct gc_heap *heap,
+                                            void* (*handler)(struct gc_heap*,
+                                                             size_t)) {
+  heap->allocation_failure = handler;
+}
+
 static int
 heap_init(struct gc_heap *heap, const struct gc_options *options) {
   // *heap is already initialized to 0.
@@ -1143,6 +1348,7 @@ heap_init(struct gc_heap *heap, const struct gc_options *options) {
                                    allocation_counter_from_thread,
                                    set_heap_size_from_thread,
                                    heap->background_thread);
+  heap->allocation_failure = allocation_failure;
 
   return 1;
 }
@@ -1159,16 +1365,18 @@ gc_init(const struct gc_options *options, struct gc_stack_addr stack_base,
   GC_ASSERT_EQ(gc_allocator_allocation_limit_offset(),
                offsetof(struct nofl_allocator, sweep));
   GC_ASSERT_EQ(gc_allocator_alloc_table_alignment(), NOFL_SLAB_SIZE);
-  GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_TAGGED),
-               NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_PRECISELY);
   GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_TAGGED_POINTERLESS),
                NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_NONE);
   if (GC_CONSERVATIVE_TRACE) {
+    GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_TAGGED),
+                 NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_CONSERVATIVELY);
     GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_UNTAGGED_CONSERVATIVE),
                  NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_CONSERVATIVELY);
     GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_UNTAGGED_POINTERLESS),
                  NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_NONE);
   } else {
+    GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_TAGGED),
+                 NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_PRECISELY);
     GC_ASSERT_EQ(gc_allocator_alloc_table_begin_pattern(GC_ALLOCATION_UNTAGGED_POINTERLESS),
                  NOFL_METADATA_BYTE_YOUNG | NOFL_METADATA_BYTE_TRACE_NONE |
                  NOFL_METADATA_BYTE_PINNED);
@@ -1234,12 +1442,13 @@ gc_finish_for_thread(struct gc_mutator *mut) {
 
 static void
 deactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
-  GC_ASSERT(mut->next == NULL);
+  GC_ASSERT(mut->active);
   nofl_allocator_finish(&mut->allocator, heap_nofl_space(heap));
   if (GC_GENERATIONAL)
     gc_field_set_writer_release_buffer(&mut->logger);
   heap_lock(heap);
   heap->inactive_mutator_count++;
+  mut->active = 0;
   gc_stack_capture_hot(&mut->stack);
   if (all_mutators_stopped(heap))
     pthread_cond_signal(&heap->collector_cond);
@@ -1251,15 +1460,42 @@ reactivate_mutator(struct gc_heap *heap, struct gc_mutator *mut) {
   heap_lock(heap);
   while (mutators_are_stopping(heap))
     pthread_cond_wait(&heap->mutator_cond, &heap->lock);
+  mut->active = 1;
   heap->inactive_mutator_count--;
   heap_unlock(heap);
 }
 
+void gc_deactivate(struct gc_mutator *mut) {
+  GC_ASSERT(mut->active);
+  deactivate_mutator(mutator_heap(mut), mut);
+}
+
+void gc_reactivate(struct gc_mutator *mut) {
+  GC_ASSERT(!mut->active);
+  reactivate_mutator(mutator_heap(mut), mut);
+}
+
 void*
-gc_call_without_gc(struct gc_mutator *mut, void* (*f)(void*), void *data) {
+gc_deactivate_for_call(struct gc_mutator *mut,
+                       void* (*f)(struct gc_mutator*, void*),
+                       void *data) {
   struct gc_heap *heap = mutator_heap(mut);
   deactivate_mutator(heap, mut);
-  void *ret = f(data);
+  void *ret = f(mut, data);
   reactivate_mutator(heap, mut);
+  return ret;
+}
+
+void*
+gc_reactivate_for_call(struct gc_mutator *mut,
+                       void* (*f)(struct gc_mutator*, void*),
+                       void *data) {
+  struct gc_heap *heap = mutator_heap(mut);
+  int reactivate = !mut->active;
+  if (reactivate)
+    reactivate_mutator(heap, mut);
+  void *ret = f(mut, data);
+  if (reactivate)
+    deactivate_mutator(heap, mut);
   return ret;
 }

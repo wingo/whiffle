@@ -88,6 +88,8 @@ static int visit_roots(struct dl_phdr_info *info, size_t size, void *data) {
     if (p->p_type == PT_LOAD && (p->p_flags & PF_W)) {
       uintptr_t start = p->p_vaddr + object_addr;
       uintptr_t end = start + p->p_memsz;
+      start = align_up(start, sizeof(void*));
+      end = align_down(end, sizeof(void*));
       DEBUG("found roots for '%s': [%p,%p)\n", object_name,
             (void*)start, (void*)end);
       visit_data->f(start, end, visit_data->heap, visit_data->data);
@@ -162,12 +164,12 @@ gc_platform_acquire_memory_from_reservation(struct gc_reservation reservation,
   GC_ASSERT(size <= reservation.size);
   GC_ASSERT(offset <= reservation.size - size);
 
-  void *mem = mmap((void*)(reservation.base + offset), size,
-                   PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
-  if (mem == MAP_FAILED) {
-    perror("mmap failed");
+  void *mem = (void*)(reservation.base + offset);
+  if (mprotect(mem, size, PROT_READ|PROT_WRITE)) {
+    perror("mprotect failed");
     return NULL;
   }
+  // FIXME: Should we gc_platform_populate_memory() here?
 
   return mem;
 }

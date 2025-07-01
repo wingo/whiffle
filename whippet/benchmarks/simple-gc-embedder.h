@@ -23,7 +23,6 @@ gc_is_valid_conservative_ref_displacement(uintptr_t displacement) {
 
 // No external objects in simple benchmarks.
 static inline int gc_extern_space_visit(struct gc_extern_space *space,
-                                        struct gc_edge edge,
                                         struct gc_ref ref) {
   GC_CRASH();
 }
@@ -91,6 +90,32 @@ static inline void gc_trace_heap_roots(struct gc_heap_roots *roots,
   if (roots)
     visit_roots(roots->roots, trace_edge, heap, trace_data);
 }
+
+static inline void
+gc_trace_mutator_pinned_roots(struct gc_mutator_roots *roots,
+                              void (*trace_pinned)(struct gc_ref ref,
+                                                   struct gc_heap *heap,
+                                                   void *data),
+                              void (*trace_ambiguous)(uintptr_t start,
+                                                      uintptr_t end,
+                                                      int possibly_interior,
+                                                      struct gc_heap *heap,
+                                                      void *data),
+                              struct gc_heap *heap,
+                              void *data) {}
+
+static inline void
+gc_trace_heap_pinned_roots(struct gc_heap_roots *roots,
+                           void (*trace_pinned)(struct gc_ref ref,
+                                                struct gc_heap *heap,
+                                                void *data),
+                           void (*trace_ambiguous)(uintptr_t start,
+                                                   uintptr_t end,
+                                                   int possibly_interior,
+                                                   struct gc_heap *heap,
+                                                   void *data),
+                           struct gc_heap *heap,
+                           void *data) {}
 
 static inline uintptr_t gc_object_forwarded_nonatomic(struct gc_ref ref) {
   uintptr_t tag = *tag_word(ref);
