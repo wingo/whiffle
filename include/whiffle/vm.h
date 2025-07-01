@@ -10,8 +10,11 @@
 #include <sys/time.h>
 
 #include <gc-api.h>
+#include <gc-allocate.h>
+#include <gc-barrier.h>
 #include <gc-basic-stats.h>
 #include <gc-ephemeron.h>
+#include <gc-safepoint.h>
 
 #include "types.h"
 
@@ -751,7 +754,7 @@ static inline int is_thread(Value x) {
   return is_heap_object(x) && tagged_kind(value_to_heap_object(x)) == THREAD_TAG;
 }
 
-static void* vm_thread_transition_to_running(void *data) {
+static void* vm_thread_transition_to_running(struct gc_mutator *unused, void *data) {
   Thread *thread = data;
   pthread_mutex_lock(&thread->lock);
   VM_CHECK(thread->state == THREAD_SPAWNING);
@@ -765,7 +768,7 @@ static void* vm_thread_transition_to_running(void *data) {
   return NULL;
 }
 
-static void* vm_thread_wait_for_stopping(void *data) {
+static void* vm_thread_wait_for_stopping(struct gc_mutator *unused, void *data) {
   Thread *thread = data;
   pthread_mutex_lock(&thread->lock);
   while (thread->state < THREAD_STOPPING)
@@ -775,7 +778,7 @@ static void* vm_thread_wait_for_stopping(void *data) {
   return NULL;
 }
 
-static void* vm_thread_transition_to_stopped(void *data) {
+static void* vm_thread_transition_to_stopped(struct gc_mutator *unused, void *data) {
   Thread *thread = data;
   pthread_mutex_lock(&thread->lock);
   VM_CHECK(thread->state == THREAD_RUNNING);
@@ -816,9 +819,9 @@ static void* vm_thread_proc_inner(struct gc_stack_addr stack_base,
 
   // Now that we mark our stack and have one reserved stack slot,
   // receive the thunk into the stack slot.
-  gc_call_without_gc(thread->mut,
-                     vm_thread_transition_to_running,
-                     thread);
+  gc_deactivate_for_call(thread->mut,
+                         vm_thread_transition_to_running,
+                         thread);
 
   // Run the thunk.
   vm = vm_closure_code(vm.sp[0])(vm, 1);
@@ -827,9 +830,9 @@ static void* vm_thread_proc_inner(struct gc_stack_addr stack_base,
   thread->roots.safepoint = vm;
 
   // RDV with joiner to send result back.
-  gc_call_without_gc(thread->mut,
-                     vm_thread_transition_to_stopped,
-                     thread);
+  gc_deactivate_for_call(thread->mut,
+                         vm_thread_transition_to_stopped,
+                         thread);
 
   gc_finish_for_thread(thread->mut);
   munmap(mem, bytes);
@@ -841,7 +844,7 @@ static void* vm_thread_proc(void *data) {
   return gc_call_with_stack_addr(vm_thread_proc_inner, data);
 }
 
-static void* vm_spawn_thread_without_gc(void *data) {
+static void* vm_spawn_thread_without_gc(struct gc_mutator *mut, void *data) {
   Thread *spawning_thread = data;
   struct gc_heap *heap = spawning_thread->heap;
 
@@ -870,9 +873,9 @@ static inline Value vm_spawn_thread(struct VM vm, Value *thunk) {
 
   vm_record_cooperative_safepoint(vm);
 
-  Thread *thread = gc_call_without_gc(vm.thread->mut,
-                                      vm_spawn_thread_without_gc,
-                                      vm.thread);
+  Thread *thread = gc_deactivate_for_call(vm.thread->mut,
+                                          vm_spawn_thread_without_gc,
+                                          vm.thread);
 
   thread->sp_base[-1] = *thunk;
   thread->state = THREAD_RUNNING;
@@ -892,7 +895,7 @@ static inline Value vm_join_thread(struct VM vm, Value *handle) {
   Thread *thread = th->thread;
 
   vm_record_cooperative_safepoint(vm);
-  gc_call_without_gc(vm.thread->mut, vm_thread_wait_for_stopping, thread);
+  gc_deactivate_for_call(vm.thread->mut, vm_thread_wait_for_stopping, thread);
 
   Value ret = thread->sp_base[-1];
   thread->state = THREAD_STOPPED;

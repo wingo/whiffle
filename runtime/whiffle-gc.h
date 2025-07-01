@@ -25,7 +25,6 @@ gc_is_valid_conservative_ref_displacement(uintptr_t displacement) {
 }
 
 static inline int gc_extern_space_visit(struct gc_extern_space *state,
-                                        struct gc_edge edge,
                                         struct gc_ref ref) {
   // Statically allocated objects can never reference objects from
   // another space; it's mostly fine to consider them all to be
