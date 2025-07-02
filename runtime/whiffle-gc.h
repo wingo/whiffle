@@ -16,12 +16,11 @@ static inline size_t gc_finalizer_priority_count(void) { return 2; }
 
 static inline int
 gc_is_valid_conservative_ref_displacement(uintptr_t displacement) {
-#if GC_CONSERVATIVE_ROOTS || GC_CONSERVATIVE_TRACE
-  return displacement == 0 || displacement == PAIR_TAG;
-#else
+  if (GC_CONSERVATIVE_ROOTS || GC_CONSERVATIVE_TRACE)
+    return displacement == 0 || displacement == PAIR_TAG;
+
   // Shouldn't get here.
   GC_CRASH();
-#endif
 }
 
 static inline int gc_extern_space_visit(struct gc_extern_space *state,
@@ -94,10 +93,6 @@ static inline void gc_trace_object(struct gc_ref ref,
                                    struct gc_heap *heap,
                                    void *trace_data,
                                    size_t *size) {
-#if GC_CONSERVATIVE_TRACE
-  // Shouldn't get here.
-  GC_CRASH();
-#else
   Tagged *tagged = gc_ref_heap_object(ref);
   uintptr_t tag_word = tagged->tag;
   if (tag_is_pair(tag_word)) {
@@ -207,7 +202,6 @@ static inline void gc_trace_object(struct gc_ref ref,
     default:
       GC_CRASH();
   }
-#endif // GC_CONSERVATIVE_TRACE
 }
 
 static inline void gc_trace_mutator_roots(struct gc_mutator_roots *roots,
@@ -232,6 +226,34 @@ static inline void gc_trace_heap_roots(struct gc_heap_roots *roots,
                                        void *trace_data) {
   if (roots)
     GC_CRASH();
+}
+
+static inline void
+gc_trace_mutator_pinned_roots (struct gc_mutator_roots *roots,
+                               void (*trace_pinned) (struct gc_ref ref,
+                                                     struct gc_heap *heap,
+                                                     void *trace_data),
+                               void (*trace_ambiguous) (uintptr_t lo,
+                                                        uintptr_t hi,
+                                                        int possibly_interior,
+                                                        struct gc_heap *heap,
+                                                        void *trace_data),
+                               struct gc_heap *heap,
+                               void *trace_data) {
+}
+
+static inline void
+gc_trace_heap_pinned_roots (struct gc_heap_roots *roots,
+                            void (*trace_pinned) (struct gc_ref ref,
+                                                  struct gc_heap *heap,
+                                                  void *trace_data),
+                            void (*trace_ambiguous) (uintptr_t lo,
+                                                     uintptr_t hi,
+                                                     int possibly_interior,
+                                                     struct gc_heap *heap,
+                                                     void *trace_data),
+                            struct gc_heap *heap,
+                            void *trace_data) {
 }
 
 static inline uintptr_t gc_object_forwarded_nonatomic(struct gc_ref ref) {
