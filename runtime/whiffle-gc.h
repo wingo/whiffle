@@ -86,13 +86,12 @@ static inline size_t object_size_for_tag(uintptr_t tag_word) {
   }
 }
 
-static inline void gc_trace_object(struct gc_ref ref,
-                                   void (*trace_edge)(struct gc_edge edge,
-                                                      struct gc_heap *heap,
-                                                      void *trace_data),
-                                   struct gc_heap *heap,
-                                   void *trace_data,
-                                   size_t *size) {
+static inline size_t gc_trace_object(struct gc_ref ref,
+                                     void (*trace_edge)(struct gc_edge edge,
+                                                        struct gc_heap *heap,
+                                                        void *trace_data),
+                                     struct gc_heap *heap,
+                                     void *trace_data) {
   Tagged *tagged = gc_ref_heap_object(ref);
   uintptr_t tag_word = tagged->tag;
   if (tag_is_pair(tag_word)) {
@@ -101,9 +100,7 @@ static inline void gc_trace_object(struct gc_ref ref,
       trace_tagged_edge(trace_edge, gc_edge(&p->tag), heap, trace_data);
       trace_tagged_edge(trace_edge, gc_edge(&p->cdr), heap, trace_data);
     }
-    if (size)
-      *size = sizeof(*p);
-    return;
+    return sizeof(*p);
   }
 
   switch (tag_kind(tag_word)) {
@@ -112,9 +109,7 @@ static inline void gc_trace_object(struct gc_ref ref,
       if (trace_edge) {
         trace_tagged_edge(trace_edge, gc_edge(&b->val), heap, trace_data);
       }
-      if (size)
-        *size = object_size_for_tag(tag_word);
-      return;
+      return object_size_for_tag(tag_word);
     }
 
     case VECTOR_TAG: {
@@ -124,9 +119,7 @@ static inline void gc_trace_object(struct gc_ref ref,
         for (size_t i = 0; i < len; i++)
           trace_tagged_edge(trace_edge, gc_edge(&v->vals[i]), heap, trace_data);
       }
-      if (size)
-        *size = object_size_for_tag(tag_word);
-      return;
+      return object_size_for_tag(tag_word);
     }
 
     case CLOSURE_TAG: {
@@ -137,9 +130,7 @@ static inline void gc_trace_object(struct gc_ref ref,
           trace_tagged_edge(trace_edge, gc_edge(&c->free_vars[i]), heap,
                             trace_data);
       }
-      if (size)
-        *size = object_size_for_tag(tag_word);
-      return;
+      return object_size_for_tag(tag_word);
     }
 
     case STRING_TAG: {
@@ -147,9 +138,7 @@ static inline void gc_trace_object(struct gc_ref ref,
       if (trace_edge) {
         trace_edge(gc_edge(&str->chars), heap, trace_data);
       }
-      if (size)
-        *size = object_size_for_tag(tag_word);
-      return;
+      return object_size_for_tag(tag_word);
     }
 
     case SYMBOL_TAG: {
@@ -157,33 +146,25 @@ static inline void gc_trace_object(struct gc_ref ref,
       if (trace_edge) {
         trace_edge(gc_edge(&sym->str), heap, trace_data);
       }
-      if (size)
-        *size = object_size_for_tag(tag_word);
-      return;
+      return object_size_for_tag(tag_word);
     }
 
     case THREAD_TAG: {
       ThreadHandle *thr = gc_ref_heap_object(ref);
-      if (size)
-        *size = object_size_for_tag(tag_word);
-      return;
+      return object_size_for_tag(tag_word);
     }
 
     case BYTEVECTOR_TAG: {
       Bytevector *v = gc_ref_heap_object(ref);
       size_t len = tagged_payload(&v->tag);
-      if (size)
-        *size = object_size_for_tag(tag_word);
-      return;
+      return object_size_for_tag(tag_word);
     }
 
     case EPHEMERON_TAG: {
       Ephemeron *e = gc_ref_heap_object(ref);
       if (trace_edge)
         gc_trace_ephemeron(e, trace_edge, heap, trace_data);
-      if (size)
-        *size = object_size_for_tag(tag_word);
-      return;
+      return object_size_for_tag(tag_word);
     }
 
     case EPHEMERON_TABLE_TAG: {
@@ -194,9 +175,7 @@ static inline void gc_trace_object(struct gc_ref ref,
           if (gc_ephemeron_chain_head(&t->vals[i]))
             trace_edge(gc_edge(&t->vals[i]), heap, trace_data);
       }
-      if (size)
-        *size = object_size_for_tag(tag_word);
-      return;
+      return object_size_for_tag(tag_word);
     }
 
     default:
