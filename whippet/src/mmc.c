@@ -581,11 +581,14 @@ heap_last_gc_yield(struct gc_heap *heap) {
   return 1.0 - ((double) live_size) / heap->size_at_last_gc;
 }
 
+// Just return fragmentation in the nofl space, it's the only thing that
+// matters for deciding whether or not to decide to compact the nofl
+// space.
 static double
 heap_fragmentation(struct gc_heap *heap) {
   struct nofl_space *nofl_space = heap_nofl_space(heap);
   size_t fragmentation = nofl_space_fragmentation(nofl_space);
-  return ((double)fragmentation) / heap->size;
+  return ((double)fragmentation) / nofl_space_size(nofl_space);
 }
 
 static size_t
@@ -943,38 +946,35 @@ collect(struct gc_mutator *mut, enum gc_collection_kind requested_kind) {
 }
 
 static int
-maybe_grow_heap (struct gc_heap *heap, size_t for_allocation)
+maybe_grow_heap_instead_of_collecting(struct gc_heap *heap,
+                                      size_t for_allocation)
 {
-  if (!for_allocation)
-    return 0;
-  if (heap->sizer.policy != GC_HEAP_SIZE_GROWABLE)
-    return 0;
+  // Sometimes when we have exhausted allocatable blocks, we should grow
+  // the heap instead of collecting.
 
-  pthread_mutex_lock(&heap->lock);
-  if (heap->count_at_last_growth == heap->count)
-    {
-      pthread_mutex_unlock(&heap->lock);
-      return 0;
+  int did_grow = 0;
+
+  // Only grow if this GC is triggered in response to allocation.
+  if (for_allocation) {
+    pthread_mutex_lock(&heap->lock);
+    // Only grow instead of collecting once in a cycle.
+    if (heap->count_at_last_growth != heap->count) {
+      double yield_at_last_gc = heap_last_gc_yield (heap);
+      uint64_t live_at_last_gc =
+        heap->size_at_last_gc * (1.0 - yield_at_last_gc);
+      size_t target_size = gc_heap_sizer_target_size(heap->sizer, heap->size,
+                                                     live_at_last_gc);
+      // Only grow if target heap size is greater than current heap size.
+      if (target_size > heap->size) {
+        target_size = align_up(target_size, NOFL_BLOCK_SIZE);
+        resize_heap(heap, target_size);
+        did_grow = 1;
+      }
     }
+    pthread_mutex_unlock(&heap->lock);
+  }
 
-  uint64_t progress = 0;
-  nofl_space_add_to_allocation_counter(heap_nofl_space(heap), &progress);
-  large_object_space_add_to_allocation_counter(heap_large_object_space(heap),
-                                               &progress);
-  double yield_at_last_gc = heap_last_gc_yield (heap);
-  uint64_t live_at_last_gc = heap->size_at_last_gc * (1.0 - yield_at_last_gc);
-  uint64_t expected_progress =
-    live_at_last_gc * (heap->sizer.growable->multiplier - 1.0);
-  uint64_t minimum_progress = expected_progress / 2;
-  if (progress < minimum_progress)
-    {
-      resize_heap(heap, heap->size + minimum_progress);
-      pthread_mutex_unlock(&heap->lock);
-      return 1;
-    }
-
-  pthread_mutex_unlock(&heap->lock);
-  return 0;
+  return did_grow;
 }
 
 static int
@@ -983,7 +983,7 @@ trigger_collection(struct gc_mutator *mut,
                    size_t for_allocation) {
   struct gc_heap *heap = mutator_heap(mut);
 
-  if (maybe_grow_heap (heap, for_allocation))
+  if (maybe_grow_heap_instead_of_collecting(heap, for_allocation))
     return 1;
 
   int prev_kind = -1;
